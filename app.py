@@ -1479,18 +1479,23 @@ elif code == "DASHBOARD":
 else:
     subs = SUBTABS[code]
     model = get_model()
-    tabs = st.tabs(subs)
-    for i, name in enumerate(subs):
-        with tabs[i]:
-            if name == "PyL":
-                _table_pnl(model, "CONSOLIDADO" if code == "CONSOLIDADO"
-                           else code)
-            elif name == "PyL v2 · por centro":
-                _table_pnl_v2(model)
-            elif name == "Cashflow":
-                _table_cf(model, "CONSOLIDADO" if code == "CONSOLIDADO"
-                          else code)
-            elif name == "Resumen":
-                _placeholder("Resumen consolidado")
-            elif name == "Tabla de mando":
-                _tabla_de_mando(code, sel_label)
+    # Subtab por defecto: PyL (cacheado, instantaneo). La Tabla de
+    # mando solo se renderiza cuando el usuario clica explicitamente
+    # ahi -> cambio de K es rapidisimo porque no se cargan los
+    # ~25 widgets del Tabla de mando por defecto.
+    default_idx = subs.index("PyL") if "PyL" in subs else 0
+    name = st.radio(
+        "Vista", subs, key="sub_%s" % code, horizontal=True,
+        label_visibility="collapsed", index=default_idx)
+    if name == "PyL":
+        _table_pnl(model, "CONSOLIDADO" if code == "CONSOLIDADO"
+                   else code)
+    elif name == "PyL v2 · por centro":
+        _table_pnl_v2(model)
+    elif name == "Cashflow":
+        _table_cf(model, "CONSOLIDADO" if code == "CONSOLIDADO"
+                  else code)
+    elif name == "Resumen":
+        _placeholder("Resumen consolidado")
+    elif name == "Tabla de mando":
+        _tabla_de_mando(code, sel_label)
