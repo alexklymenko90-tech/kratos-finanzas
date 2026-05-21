@@ -1444,6 +1444,32 @@ def _tabla_de_mando(code, sel_label):
         invalidate_model()
 
 
+# Pre-calentar caché de todos los centros + consolidado en una sola
+# pasada por sesión. Cuesta ~5-10s la primera vez, pero a partir de ahí
+# CUALQUIER cambio entre K's (o a Consolidado/HQ) es instantáneo porque
+# todo el HTML de P&L y Cash flow esta en RAM.
+if (not st.session_state.get("_warmed_v") or
+        st.session_state.get("_warmed_v") != _v()):
+    with st.spinner("⚡ Preparando todos los centros (solo la primera vez)…"):
+        # Forzar build_model (cacheado)
+        _m_w = get_model()
+        if _m_w is not None:
+            for _t in (config.ALL_CENTERS + ["CONSOLIDADO"]):
+                try:
+                    _c_pnl_html(_v(), _t)
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    _c_cf_html(_v(), _t, _saldo_inicial(_t))
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                _c_pnl_v2_html(_v())
+            except Exception:  # noqa: BLE001
+                pass
+    st.session_state["_warmed_v"] = _v()
+
+
 if code in DISABLED:
     st.info("El centro **%s** todavía no está disponible. Se activará "
             "cuando exista la sociedad/centro." % sel_label)
