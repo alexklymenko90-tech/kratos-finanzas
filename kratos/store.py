@@ -135,16 +135,19 @@ def init_db() -> None:
     with engine.begin() as conn:
         for stmt in ddl:
             conn.execute(text(stmt))
-        # Migraciones para BBDD de versiones previas
-        for alter in (
-            "ALTER TABLE socios_plan ADD COLUMN bajas REAL DEFAULT 0",
-            "ALTER TABLE personal_plan ADD COLUMN destino TEXT",
-            "ALTER TABLE personal_plan ADD COLUMN ss_pct REAL",
-        ):
-            try:
+    # Migraciones para BBDD de versiones previas. Cada una en su propia
+    # transaccion porque Postgres aborta toda la transaccion al primer
+    # error (a diferencia de SQLite).
+    for alter in (
+        "ALTER TABLE socios_plan ADD COLUMN bajas REAL DEFAULT 0",
+        "ALTER TABLE personal_plan ADD COLUMN destino TEXT",
+        "ALTER TABLE personal_plan ADD COLUMN ss_pct REAL",
+    ):
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(alter))
-            except SQLAlchemyError:
-                pass
+        except SQLAlchemyError:
+            pass
 
     # Semillas (solo si vacias)
     with engine.begin() as conn:
