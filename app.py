@@ -117,6 +117,28 @@ _require_login()
 store.init_db()
 
 
+# --- Cache del modelo (rapido en cloud) -----------------------------------
+@st.cache_data(ttl=600, show_spinner=False)
+def _build_model_cached(_version: int):
+    """Construye el modelo (lectura completa de BBDD + calculos). El
+    parametro `_version` se usa para invalidar la cache; cuando algo
+    cambia (carga libro, edicion de Tabla de mando, mapeo, etc.) se
+    incrementa el contador en session_state y la cache se invalida."""
+    return pipeline.build_model()
+
+
+def get_model():
+    v = st.session_state.get("_model_version", 0)
+    return _build_model_cached(v)
+
+
+def invalidate_model():
+    """Llamar tras cualquier escritura que afecte la P&L/Cash flow."""
+    st.session_state["_model_version"] = (
+        st.session_state.get("_model_version", 0) + 1)
+    _build_model_cached.clear()
+
+
 def _logo_b64():
     p = os.path.join(config.PROJECT_DIR, "assets", "logo.png")
     try:
@@ -225,13 +247,14 @@ def dlg_export():
                 st.warning("La plantilla no tenía valores.")
             else:
                 store.save_assumptions(adf)
+                invalidate_model()
                 st.success("Importados %d valores en %d centros."
                            % (len(adf), adf["centro"].nunique()))
                 st.button("Cerrar", on_click=st.rerun)
 
     st.divider()
     st.markdown("##### Excel de resultados (P&L + Cash flow)")
-    m = pipeline.build_model()
+    m = get_model()
     if m is None:
         st.info("Sube el libro diario (pestaña **Libro diario**) para "
                 "poder exportar resultados.")
@@ -253,6 +276,7 @@ def dlg_settings():
     if st.button("Guardar aperturas"):
         for _, r in ed.iterrows():
             store.set_opening(r["centro"], str(r["apertura"]).strip())
+        invalidate_model()
         st.success("Guardado.")
 
     st.markdown("##### Prorrateo de gastos de HQ")
@@ -264,6 +288,7 @@ def dlg_settings():
                                          else "Proporcional a ingresos"))
     if st.button("Guardar prorrateo"):
         store.set_meta("proration_key", nk)
+        invalidate_model()
         st.success("Guardado.")
 
     st.markdown("##### Impuesto de Sociedades")
@@ -273,6 +298,7 @@ def dlg_settings():
         min_value=0.0, max_value=100.0, step=1.0, value=isr)
     if st.button("Guardar tasa IS"):
         store.set_meta("is_rate", float(new_isr))
+        invalidate_model()
         st.success("Guardado.")
 
     st.markdown("##### Mapeo de cuentas → (seccion, partida)")
@@ -281,6 +307,7 @@ def dlg_settings():
                          key="m_ed", height=240)
     if st.button("Guardar mapeo"):
         store.save_mapping(med.to_dict("records"))
+        invalidate_model()
         st.success("Guardado. Reprocesa la carga (Importar) para aplicarlo.")
 
     df = store.load_ledger()
@@ -303,6 +330,8 @@ def dlg_settings():
                         store.set_override(int(r["asiento"]),
                                            int(r["linea"]), r["nuevo_centro"])
                         n += 1
+                if n:
+                    invalidate_model()
                 st.success("%d guardadas. Reprocesa la carga." % n)
 
 
@@ -359,6 +388,7 @@ def dlg_carga():
         except Exception as e:  # noqa: BLE001
             st.error("No se pudo procesar el archivo: %s" % e)
         else:
+            invalidate_model()
             st.success(
                 "Carga procesada · %s asientos · %s → %s · cobertura %.1f%%"
                 % ("{:,}".format(s.n_rows), s.date_min, s.date_max,
@@ -483,6 +513,7 @@ def dlg_diagnostico():
         d = _classify.apply_overrides(d, store.load_overrides())
         d = _plm.apply_mapping(d, store.load_mapping())
         store.save_ledger(d)
+        invalidate_model()
         st.success("Reclasificado. Cierra el diálogo y abre de nuevo "
                    "para ver los cambios.")
         st.rerun()
@@ -804,6 +835,7 @@ def _per_label(p):
 def _cb_season(code):
     store.set_season(code, [st.session_state["seas_%d_%s" % (i, code)]
                             for i in range(1, 13)])
+    invalidate_model()
 
 
 def _cb_model_cfg(code):
@@ -811,6 +843,7 @@ def _cb_model_cfg(code):
                                   st.session_state["cfg_sm_%s" % code],
                                   st.session_state["cfg_sy_%s" % code],
                                   st.session_state["cfg_hz_%s" % code])
+    invalidate_model()
 
 
 def _cb_socios(code):
@@ -818,11 +851,13 @@ def _cb_socios(code):
         "iva": st.session_state["soc_iva_%s" % code],
         "aforo": st.session_state["soc_afo_%s" % code],
         "ticket": st.session_state["soc_tkt_%s" % code]})
+    invalidate_model()
 
 
 def _cb_saldo(code):
     store.set_center_params(
         code, {"saldo_inicial": st.session_state["sld_%s" % code]})
+    invalidate_model()
 
 
 def _tabla_de_mando(code, sel_label):
@@ -928,6 +963,7 @@ def _tabla_de_mando(code, sel_label):
                                 "churn": float(ch or 0)}
         if _norm(newplan) != _norm(plan):
             store.set_socios_plan(code, newplan)
+            invalidate_model()
             st.rerun()
 
         # Tabla calculada con colores de marca Kratos (solo lectura,
@@ -1046,6 +1082,7 @@ def _tabla_de_mando(code, sel_label):
 
         if _norm_p(new_pers) != _norm_p(pers["rows"]):
             store.set_personal(code, new_pers)
+            invalidate_model()
             st.rerun()
 
     with col_tot:
@@ -1170,7 +1207,17 @@ def _tabla_de_mando(code, sel_label):
                 "partida": part, "importe": imp,
                 "intervalo": config.FREQ_MONTHS.get(freq, 1),
                 "apartado": sec_key, "mes_inicio": mi})
-    store.set_gastos_plan(code, all_g)
+
+    def _norm_g(rows):
+        return tuple(
+            (r.get("partida", ""), round(float(r.get("importe", 0) or 0), 2),
+             int(r.get("intervalo", 1) or 1),
+             r.get("apartado", ""),
+             int(r.get("mes_inicio", 1) or 1))
+            for r in rows)
+    if _norm_g(all_g) != _norm_g(gplan):
+        store.set_gastos_plan(code, all_g)
+        invalidate_model()
 
 
 if code in DISABLED:
@@ -1181,7 +1228,7 @@ elif code == "DASHBOARD":
     _placeholder("Dashboard de negocio")
 else:
     subs = SUBTABS[code]
-    model = pipeline.build_model()
+    model = get_model()
     tabs = st.tabs(subs)
     for i, name in enumerate(subs):
         with tabs[i]:
