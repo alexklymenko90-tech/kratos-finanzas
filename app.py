@@ -1085,8 +1085,59 @@ def _cb_saldo(code):
 
 def _tabla_de_mando(code, sel_label):
     vv = _v()
+    # Modo VISTA por defecto (resumen ligero, sin widgets) -> el K-switch
+    # es mucho mas rapido porque solo se renderiza este resumen, no los
+    # ~25 widgets del editor. El usuario clica "Editar" para activar el
+    # modo editor cuando lo necesita.
+    edit_key = "edit_tdm_%s" % code
+    if not st.session_state.get(edit_key, False):
+        cfg = _c_center_model_config(vv, code)
+        params = _c_center_params(vv, code)
+        st.markdown("##### ⚙ Configuración del modelo · **%s**" % sel_label)
+        cA, cB = st.columns([3, 1])
+        with cA:
+            st.markdown(
+                "- **Inicio**: %s %d  ·  **Horizonte**: %d meses\n"
+                "- **Saldo inicial**: %s €"
+                % (MESES[cfg["start_month"] - 1], cfg["start_year"],
+                   cfg["horizon"],
+                   "{:,.0f}".format(params.get("saldo_inicial", 0) or 0)))
+            if code in config.CENTERS:
+                st.markdown(
+                    "- **IVA cuotas**: %.0f%%  ·  **Aforo**: %d  ·  "
+                    "**Ticket**: %.0f €/mes"
+                    % (float(params.get("iva", 21.0)),
+                       int(params.get("aforo", 0) or 0),
+                       float(params.get("ticket", 0) or 0)))
+                gplan = _c_gastos_plan(vv, code)
+                pers = _c_personal(vv, code)
+                st.markdown(
+                    "- **Gastos definidos**: %d partidas  ·  "
+                    "**Personas**: %d con sueldo>0"
+                    % (sum(1 for g in gplan
+                           if float(g.get("importe", 0) or 0) > 0),
+                       sum(1 for p in pers["rows"]
+                           if float(p.get("bruto", 0) or 0) > 0)))
+        with cB:
+            if st.button("📝 Editar", key="edit_btn_%s" % code,
+                         use_container_width=True, type="primary"):
+                st.session_state[edit_key] = True
+                st.rerun()
+        st.caption("Pulsa **Editar** para modificar el modelo. "
+                   "Cambiar de pestaña es rápido en modo vista.")
+        return
+
+    # --- MODO EDITOR (widgets completos) ---
+    cA, cB = st.columns([5, 1])
+    with cA:
+        st.markdown("##### ⚙ Configuración del modelo · **%s**"
+                    % sel_label)
+    with cB:
+        if st.button("✓ Listo", key="done_btn_%s" % code,
+                     use_container_width=True, type="primary"):
+            st.session_state[edit_key] = False
+            st.rerun()
     cfg = _c_center_model_config(vv, code)
-    st.markdown("##### ⚙ Configuración del modelo · **%s**" % sel_label)
     st.caption("Independiente por centro: estos cambios afectan **solo** a "
                "la P&L y el Cash flow de **%s**. Se aplican automáticamente."
                % sel_label)
@@ -1479,23 +1530,18 @@ elif code == "DASHBOARD":
 else:
     subs = SUBTABS[code]
     model = get_model()
-    # Subtab por defecto: PyL (cacheado, instantaneo). La Tabla de
-    # mando solo se renderiza cuando el usuario clica explicitamente
-    # ahi -> cambio de K es rapidisimo porque no se cargan los
-    # ~25 widgets del Tabla de mando por defecto.
-    default_idx = subs.index("PyL") if "PyL" in subs else 0
-    name = st.radio(
-        "Vista", subs, key="sub_%s" % code, horizontal=True,
-        label_visibility="collapsed", index=default_idx)
-    if name == "PyL":
-        _table_pnl(model, "CONSOLIDADO" if code == "CONSOLIDADO"
-                   else code)
-    elif name == "PyL v2 · por centro":
-        _table_pnl_v2(model)
-    elif name == "Cashflow":
-        _table_cf(model, "CONSOLIDADO" if code == "CONSOLIDADO"
-                  else code)
-    elif name == "Resumen":
-        _placeholder("Resumen consolidado")
-    elif name == "Tabla de mando":
-        _tabla_de_mando(code, sel_label)
+    tabs = st.tabs(subs)
+    for i, name in enumerate(subs):
+        with tabs[i]:
+            if name == "PyL":
+                _table_pnl(model, "CONSOLIDADO" if code == "CONSOLIDADO"
+                           else code)
+            elif name == "PyL v2 · por centro":
+                _table_pnl_v2(model)
+            elif name == "Cashflow":
+                _table_cf(model, "CONSOLIDADO" if code == "CONSOLIDADO"
+                          else code)
+            elif name == "Resumen":
+                _placeholder("Resumen consolidado")
+            elif name == "Tabla de mando":
+                _tabla_de_mando(code, sel_label)
