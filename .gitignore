@@ -1,0 +1,49 @@
+# --- Datos del cliente (NO subir nunca al repo) ---
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+# Excel del libro diario u otros datos contables sueltos
+*.xlsx
+*.xls
+*.csv
+
+# --- Caches y trabajo interno ---
+.claude/
+
+# --- Secretos (contrasenas, claves de BBDD, tokens) ---
+.streamlit/secrets.toml
+.env
+.env.local
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Entorno virtual ---
+.venv/
+venv/
+env/
+
+# --- IDE y sistema operativo ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs y temporales ---
+*.log
+/tmp/
+nohup.out
+
+# --- Notebooks de prueba ---
+.ipynb_checkpoints/
