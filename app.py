@@ -35,22 +35,105 @@ def _get_users() -> dict:
     return dict(users) if users else {}
 
 
+def _login_logo_b64():
+    p = os.path.join(config.PROJECT_DIR, "assets", "logo.png")
+    try:
+        with open(p, "rb") as fh:
+            return base64.b64encode(fh.read()).decode()
+    except OSError:
+        return ""
+
+
 def _require_login():
     users = _get_users()
     if not users:
         return                                # modo desarrollo (sin login)
     if st.session_state.get("auth_user"):
         return                                # ya autenticado
+
     st.markdown(
-        "<div style='max-width:380px;margin:80px auto;text-align:center'>"
-        "<h2 style='letter-spacing:6px;margin-bottom:6px'>KRATOS</h2>"
-        "<p style='color:#9aa0aa;margin-top:0'>Plan financiero</p>"
-        "</div>", unsafe_allow_html=True)
+        """
+        <style>
+          /* Oculta el menu superior y el footer en la pantalla de login */
+          [data-testid="stToolbar"] { display: none; }
+          [data-testid="stDecoration"] { display: none; }
+          footer { display: none; }
+          /* Centra el contenido vertical y horizontalmente */
+          section.main > div.block-container {
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            max-width: 100%% !important;
+          }
+          .kr-login-wrap {
+            min-height: 88vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+          }
+          .kr-login-card {
+            background: linear-gradient(180deg,#161b25 0%%,#0E1117 100%%);
+            border: 1px solid #232733;
+            border-radius: 12px;
+            padding: 0 0 26px 0;
+            width: 100%%;
+            max-width: 420px;
+            box-shadow: 0 24px 64px rgba(0,0,0,0.55);
+            overflow: hidden;
+          }
+          .kr-login-banner {
+            background: %s;
+            padding: 26px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 18px;
+          }
+          .kr-login-banner img { height: 48px; width: auto; }
+          .kr-login-banner .kr-title {
+            color: #fff; font-weight: 800; letter-spacing: 12px;
+            font-size: 26px;
+          }
+          .kr-login-sub {
+            text-align: center; color: #9aa0aa; font-size: 12px;
+            letter-spacing: 2px; text-transform: uppercase;
+            margin: 18px 0 6px 0;
+          }
+          .kr-login-body { padding: 8px 26px 4px 26px; }
+          .kr-login-footer {
+            text-align: center; color: #6b7280; font-size: 11px;
+            margin-top: 18px;
+          }
+        </style>
+        """ % BRAND_RED, unsafe_allow_html=True)
+
+    _lb = _login_logo_b64()
+    logo = ("<img src='data:image/png;base64,%s'/>" % _lb) if _lb else ""
+
+    st.markdown('<div class="kr-login-wrap">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="kr-login-card">'
+        '<div class="kr-login-banner">%s'
+        '<span class="kr-title">KRATOS</span></div>'
+        '<div class="kr-login-sub">Plan financiero · multi-centro</div>'
+        '<div class="kr-login-body">' % logo,
+        unsafe_allow_html=True)
+
     with st.form("login_form", clear_on_submit=False):
-        u = st.text_input("Usuario", key="login_u")
-        p = st.text_input("Contraseña", type="password", key="login_p")
-        ok = st.form_submit_button("Entrar", type="primary",
+        u = st.text_input("Usuario", key="login_u",
+                          placeholder="tu usuario")
+        p = st.text_input("Contraseña", type="password", key="login_p",
+                          placeholder="••••••••")
+        ok = st.form_submit_button("Entrar  →", type="primary",
                                    use_container_width=True)
+
+    st.markdown(
+        '</div>'
+        '<div class="kr-login-footer">Acceso restringido · '
+        'sesión cifrada</div>'
+        '</div>'
+        '</div>', unsafe_allow_html=True)
+
     if ok:
         if u in users and str(users[u]) == p:
             st.session_state["auth_user"] = u
