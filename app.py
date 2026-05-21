@@ -1246,17 +1246,17 @@ def _tabla_de_mando(code, sel_label):
                     required=False, width="small"),
             })
         for _, r in sed.iterrows():
-            def _v(col):
+            def _cell(col):
                 x = r[col]
                 return None if pd.isna(x) else x
-            part = ("" if _v("Partida") is None
-                    else str(_v("Partida")).strip())
+            part = ("" if _cell("Partida") is None
+                    else str(_cell("Partida")).strip())
             if not part:
                 continue
-            imp_raw = _v("€/periodo")
+            imp_raw = _cell("€/periodo")
             imp = float(imp_raw) if imp_raw is not None else 0.0
-            freq = _v("Frecuencia") or "Mensual"
-            ml = _v("Mes inicio")
+            freq = _cell("Frecuencia") or "Mensual"
+            ml = _cell("Mes inicio")
             mi = (config.MESES_CORTOS.index(ml) + 1
                   if ml in config.MESES_CORTOS else 1)
             all_g.append({
