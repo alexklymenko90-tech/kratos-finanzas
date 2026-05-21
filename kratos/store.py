@@ -271,8 +271,13 @@ def load_assumptions() -> pd.DataFrame:
 def save_assumptions(df: pd.DataFrame) -> None:
     keep = df[["centro", "periodo", "concepto", "valor"]].copy()
     keep["valor"] = pd.to_numeric(keep["valor"], errors="coerce").fillna(0.0)
-    keep.to_sql("assumptions", get_engine(),
-                if_exists="replace", index=False)
+    # Borrar e insertar (preserva el esquema y la PK; un 'replace' con
+    # to_sql recrearia la tabla SIN la PK y rompería los upserts).
+    with get_engine().begin() as conn:
+        conn.execute(text("DELETE FROM assumptions"))
+    if not keep.empty:
+        keep.to_sql("assumptions", get_engine(),
+                    if_exists="append", index=False)
 
 
 # --- Metadatos -------------------------------------------------------------
