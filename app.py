@@ -137,6 +137,58 @@ def invalidate_model():
     st.session_state["_model_version"] = (
         st.session_state.get("_model_version", 0) + 1)
     _build_model_cached.clear()
+    # Tambien limpia las consultas individuales
+    for fn in (_c_center_model_config, _c_center_params, _c_season,
+               _c_socios_plan, _c_personal, _c_gastos_plan,
+               _c_opening_months, _c_meta, _c_load_ledger):
+        try:
+            fn.clear()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _v():
+    return st.session_state.get("_model_version", 0)
+
+
+# Wrappers cacheados de las consultas mas frecuentes para evitar
+# golpear Postgres en cada cambio de pestaña. TTL = 10 minutos;
+# invalidate_model() los limpia tras cualquier escritura.
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_center_model_config(_v, code):
+    return store.get_center_model_config(code)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_center_params(_v, code):
+    return store.get_center_params(code)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_season(_v, code):
+    return store.get_season(code)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_socios_plan(_v, code):
+    return store.get_socios_plan(code)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_personal(_v, code):
+    return store.get_personal(code)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_gastos_plan(_v, code):
+    return store.get_gastos_plan(code)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_opening_months(_v):
+    return store.opening_months()
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_meta(_v, clave, default=None):
+    return store.get_meta(clave, default)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_load_ledger(_v):
+    return store.load_ledger()
 
 
 def _logo_b64():
@@ -703,10 +755,12 @@ if not sel_label:
     sel_label = "Dashboard"
 code = dict(NAV)[sel_label]
 
-if store.get_meta("last_file"):
+_v_ = _v()
+_last_file = _c_meta(_v_, "last_file")
+if _last_file:
     st.caption("Datos reales: **%s** (%s → %s)"
-               % (store.get_meta("last_file"), store.get_meta("date_min"),
-                  store.get_meta("date_max")))
+               % (_last_file, _c_meta(_v_, "date_min"),
+                  _c_meta(_v_, "date_max")))
 else:
     st.caption("Aún no hay datos reales. Usa el botón "
                "**📥 Libro diario** para subir el XLSX de Holded.")
@@ -767,7 +821,7 @@ def _table_pnl(model, target):
     st.caption("Real hasta **%s**; después, proyectado según los supuestos."
                % model.last_actual_period)
     per = _periods_for(model, target)
-    is_rate = float(store.get_meta("is_rate", config.IS_RATE_DEFAULT))
+    is_rate = float(_c_meta(_v(), "is_rate", config.IS_RATE_DEFAULT))
     tbl = analytic.pivot_analytic(model.pnl_long, target, per,
                                   is_rate=is_rate)
     _render_table(tbl, per)
@@ -782,16 +836,17 @@ def _table_pnl_v2(model):
                "sección desglosado por centro (K1 ... K4 + HQ). "
                "Real hasta **%s**." % model.last_actual_period)
     per = _periods_for(model, "CONSOLIDADO")
-    is_rate = float(store.get_meta("is_rate", config.IS_RATE_DEFAULT))
+    is_rate = float(_c_meta(_v(), "is_rate", config.IS_RATE_DEFAULT))
     tbl = analytic.pivot_analytic_v2(model.pnl_long, per, is_rate=is_rate)
     _render_table(tbl, per)
 
 
 def _saldo_inicial(target):
+    v = _v()
     if target == "CONSOLIDADO":
-        return sum(float(store.get_center_params(c).get("saldo_inicial", 0)
+        return sum(float(_c_center_params(v, c).get("saldo_inicial", 0)
                          or 0) for c in config.ALL_CENTERS)
-    return float(store.get_center_params(target).get("saldo_inicial", 0)
+    return float(_c_center_params(v, target).get("saldo_inicial", 0)
                  or 0)
 
 
@@ -803,7 +858,7 @@ def _table_cf(model, target):
     st.caption("Derivado de la P&L (caja = devengo). Inversión y "
                "financiación, de los movimientos reales del libro diario.")
     per = _periods_for(model, target)
-    is_rate = float(store.get_meta("is_rate", config.IS_RATE_DEFAULT))
+    is_rate = float(_c_meta(_v(), "is_rate", config.IS_RATE_DEFAULT))
     tbl = cashflow.pivot_cf(model.cf_long, target, per,
                             saldo_inicial=_saldo_inicial(target),
                             is_rate=is_rate)
@@ -861,7 +916,8 @@ def _cb_saldo(code):
 
 
 def _tabla_de_mando(code, sel_label):
-    cfg = store.get_center_model_config(code)
+    vv = _v()
+    cfg = _c_center_model_config(vv, code)
     st.markdown("##### ⚙ Configuración del modelo · **%s**" % sel_label)
     st.caption("Independiente por centro: estos cambios afectan **solo** a "
                "la P&L y el Cash flow de **%s**. Se aplican automáticamente."
@@ -885,7 +941,7 @@ def _tabla_de_mando(code, sel_label):
     c4.markdown("&nbsp;", unsafe_allow_html=True)
     c4.markdown("**Período:** %s" % _periodo_label(sm, sy, hz))
 
-    sld = float(store.get_center_params(code).get("saldo_inicial", 0) or 0)
+    sld = float(_c_center_params(vv, code).get("saldo_inicial", 0) or 0)
     st.number_input(
         "Saldo de caja inicial (€) — punto de partida del saldo acumulado",
         value=sld, step=100.0, format="%.0f",
@@ -894,7 +950,7 @@ def _tabla_de_mando(code, sel_label):
     if code in config.CENTERS:
         st.divider()
         st.markdown("##### 📈 Ingresos — modelo de socios")
-        p = store.get_center_params(code)
+        p = _c_center_params(vv, code)
         e1, e2, e3 = st.columns(3)
         iva = e1.number_input("IVA servicios fitness (%)", min_value=0.0,
                               max_value=100.0, step=1.0,
@@ -918,7 +974,7 @@ def _tabla_de_mando(code, sel_label):
                     "(base 100)")
         st.caption("Afecta al ingreso de cuotas: socios × ticket × "
                    "(índice/100).")
-        season = store.get_season(code)
+        season = _c_season(vv, code)
         scols = st.columns(12)
         for i in range(12):
             scols[i].number_input(
@@ -928,12 +984,12 @@ def _tabla_de_mando(code, sel_label):
 
         # --- Socios, altas y churn (mini-tabla entrada + tabla color)--
         st.markdown("##### 👥 Socios, altas y churn — mes a mes")
-        mc = store.get_center_model_config(code)
+        mc = _c_center_model_config(vv, code)
         periods = pnl.month_range(
             "%04d-%02d" % (mc["start_year"], mc["start_month"]),
             mc["horizon"])
-        ap = store.opening_months().get(code) or config.DEFAULT_START_MONTH
-        plan = store.get_socios_plan(code)
+        ap = _c_opening_months(vv).get(code) or config.DEFAULT_START_MONTH
+        plan = _c_socios_plan(vv, code)
         lbl2per = {_per_label(p): p for p in periods}
 
         st.markdown("**Entradas** — escribe Altas brutas y Churn (%) "
@@ -1019,7 +1075,7 @@ def _tabla_de_mando(code, sel_label):
         ("Sueldos brutos mensuales por persona y % de SS de la empresa. "
          "Se vuelca en la P&L como Gastos de personal desde el mes de "
          "inicio de cada uno."))
-    pers = store.get_personal(code)
+    pers = _c_personal(vv, code)
     by_rol = {r["rol"]: r for r in pers["rows"]}
     ents = config.PERSONAL_ROLES[:-1]          # primeros 5 roles
 
@@ -1133,7 +1189,7 @@ def _tabla_de_mando(code, sel_label):
     st.caption("Las partidas son las mismas que aparecen en la P&L. "
                "Solo se editan **€/periodo**, **Frecuencia** y "
                "**Mes inicio** de cada partida.")
-    gplan = store.get_gastos_plan(code)
+    gplan = _c_gastos_plan(vv, code)
     inv_freq = {v: k for k, v in config.FREQ_MONTHS.items()}
     _sec_keys = [k for k, _ in config.GASTOS_SECCIONES]
 
