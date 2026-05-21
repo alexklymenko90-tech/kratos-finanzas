@@ -171,7 +171,11 @@ def _real_apartado(df, opening, last_actual):
     return _agg(rows)
 
 
-def _proj_apartado(assumptions, opening, center_periods, last_actual):
+def _proj_apartado(assumptions, opening, center_periods, last_actual,
+                   bundle=None):
+    """`bundle` (opcional): dict pre-cargado con center_params, season,
+    socios_plan, personal, gastos_plan por centro. Si se pasa, evita
+    las llamadas individuales a store (1 query Frankfurt por cada una)."""
     rows = []
     rev_cli = set()
     base = projections.build_projected_pnl(assumptions, opening)
@@ -196,12 +200,24 @@ def _proj_apartado(assumptions, opening, center_periods, last_actual):
             continue
         ap_open = opening.get(c) or config.DEFAULT_START_MONTH
 
+        if bundle is not None:
+            params = bundle["center_params"].get(c, {"aforo": 0, "ticket": 0})
+            season_c = bundle["season"].get(c, [100.0] * 12)
+            socios_plan_c = bundle["socios_plan"].get(c, {})
+            pers = bundle["personal"].get(c, {"rows": []})
+            gastos_c = bundle["gastos_plan"].get(c, [])
+        else:
+            params = store.get_center_params(c)
+            season_c = store.get_season(c)
+            socios_plan_c = store.get_socios_plan(c)
+            pers = store.get_personal(c)
+            gastos_c = store.get_gastos_plan(c)
+
         # Ingresos: modelo de socios -> Ventas / Cuotas
-        params = store.get_center_params(c)
         ingresos = socios.ingresos_por_periodo(
             win, ap_open, float(params.get("aforo", 0) or 0),
             float(params.get("ticket", 0) or 0),
-            store.get_season(c), store.get_socios_plan(c))
+            season_c, socios_plan_c)
         for periodo, val in ingresos.items():
             if (periodo <= last_actual or periodo < ap_open or val <= 0
                     or (c, periodo, "Cuotas") in rev_cli):
@@ -211,7 +227,6 @@ def _proj_apartado(assumptions, opening, center_periods, last_actual):
                          "valor": round(val, 2)})
 
         # Personal: TODO el personal -> "Gastos de Personal"
-        pers = store.get_personal(c)
         for person in pers["rows"]:
             b = float(person["bruto"] or 0)
             if b <= 0:
@@ -236,7 +251,7 @@ def _proj_apartado(assumptions, opening, center_periods, last_actual):
                                  "valor": -abs(b * ss)})
 
         # Tabla maestra de gastos -> apartado elegido
-        for g in store.get_gastos_plan(c):
+        for g in gastos_c:
             imp = float(g["importe"] or 0)
             if imp <= 0:
                 continue
@@ -295,20 +310,140 @@ def _hq_proration(long_df, opening, weights, key):
     return pd.concat([long_df, pd.DataFrame(extra)], ignore_index=True)
 
 
+def _preload_bundle(engine):
+    """Prefetcha en UNA sola conexion toda la configuracion necesaria
+    para build_model. Reduce 25+ roundtrips a Postgres a 6 queries en
+    una conexion. Devuelve dict con center_params/model_config/season/
+    socios_plan/personal/gastos_plan por centro + meta + opening_months."""
+    from sqlalchemy import text as _text
+    cm, sp, pp, gp, m_rows, c_rows = {}, {}, {}, {}, [], []
+    with engine.begin() as conn:
+        cm_rows = conn.execute(_text(
+            "SELECT centro, clave, valor FROM center_model")).fetchall()
+        sp_rows = conn.execute(_text(
+            "SELECT centro, periodo, altas, churn, bajas "
+            "FROM socios_plan")).fetchall()
+        pp_rows = conn.execute(_text(
+            "SELECT centro, rol, nombre, bruto, mes_inicio, destino, "
+            "ss_pct FROM personal_plan")).fetchall()
+        gp_rows = conn.execute(_text(
+            "SELECT centro, idx, partida, importe, intervalo, apartado, "
+            "mes_inicio FROM gastos_plan ORDER BY centro, idx")).fetchall()
+        m_rows = conn.execute(_text(
+            "SELECT clave, valor FROM meta")).fetchall()
+        c_rows = conn.execute(_text(
+            "SELECT centro, label, apertura FROM centers")).fetchall()
+
+    # Re-agrupar por centro
+    raw_by_centro = {}
+    for centro, clave, valor in cm_rows:
+        raw_by_centro.setdefault(centro, {})[clave] = valor
+
+    center_params = {}
+    center_model_config = {}
+    season = {}
+    for centro, raw in raw_by_centro.items():
+        # center_params (iva/aforo/ticket/saldo_inicial)
+        cp = {"iva": 21.0, "aforo": 0.0, "ticket": 0.0}
+        cp.update(raw)
+        center_params[centro] = cp
+        # center_model_config
+        cmc = {"start_month": 1, "start_year": 2026,
+               "horizon": config.HORIZON_MONTHS}
+        for k, v in raw.items():
+            if k in cmc:
+                cmc[k] = int(v)
+        center_model_config[centro] = cmc
+        # season
+        s = [100.0] * 12
+        for k, v in raw.items():
+            if isinstance(k, str) and k.startswith("season_"):
+                try:
+                    i = int(k.split("_")[1])
+                    if 1 <= i <= 12:
+                        s[i - 1] = float(v)
+                except (ValueError, IndexError):
+                    pass
+        season[centro] = s
+
+    for centro, per, a, c, b in sp_rows:
+        sp.setdefault(centro, {})[per] = {
+            "altas": a or 0, "churn": c or 0, "bajas": b or 0}
+
+    pers_raw = {}
+    for centro, rol, nombre, bruto, mi, dest, ssp in pp_rows:
+        pers_raw.setdefault(centro, {})[rol] = (rol, nombre, bruto,
+                                                mi, dest, ssp)
+    personal = {}
+    for centro, saved in pers_raw.items():
+        out = []
+        for rol in config.PERSONAL_ROLES:
+            r = saved.get(rol)
+            dest = (r[4] if r and len(r) > 4 and r[4] else None)
+            if not dest:
+                dest = ("Sueldos Directos"
+                        if str(rol).startswith("Entrenador")
+                        else "Sueldos Indirectos")
+            ssp = (r[5] if r and len(r) > 5 and r[5] is not None else None)
+            out.append({
+                "rol": rol,
+                "nombre": (r[1] if r and r[1] is not None else "") or "",
+                "bruto": float(r[2]) if r and r[2] is not None else 0.0,
+                "mes_inicio": int(r[3]) if r and r[3] is not None else 1,
+                "destino": dest,
+                "ss_pct": float(ssp) if ssp is not None
+                else float(config.SS_PCT_DEFAULT)})
+        personal[centro] = {"rows": out}
+
+    for centro, idx, partida, imp, itv, ap, mi in gp_rows:
+        gp.setdefault(centro, []).append({
+            "partida": partida or "",
+            "importe": float(imp or 0),
+            "intervalo": int(itv or 1),
+            "apartado": ap or config.COST_APARTADOS[0],
+            "mes_inicio": int(mi or 1)})
+
+    import json as _json
+    meta = {}
+    for clave, valor in m_rows:
+        try:
+            meta[clave] = _json.loads(valor)
+        except (ValueError, TypeError):
+            meta[clave] = valor
+
+    opening_months = {c: a for c, _, a in c_rows}
+
+    return {
+        "center_params": center_params,
+        "center_model_config": center_model_config,
+        "season": season,
+        "socios_plan": sp,
+        "personal": personal,
+        "gastos_plan": gp,
+        "meta": meta,
+        "opening_months": opening_months,
+    }
+
+
 def build_model() -> Optional[Model]:
     df = store.load_ledger()
     if df is None:
         return None
-    opening = store.opening_months()
+    engine = store.get_engine()
+    bundle = _preload_bundle(engine)
     assumptions = store.load_assumptions()
-    last_actual = store.get_meta("last_actual_period")
+
+    opening = bundle["opening_months"]
+    last_actual = bundle["meta"].get("last_actual_period")
     if not last_actual:
         valid = [p for p in df["periodo"].dropna().unique()]
         last_actual = max(valid) if valid else config.DEFAULT_START_MONTH
 
     center_periods = {}
     for c in config.ALL_CENTERS:
-        mc = store.get_center_model_config(c)
+        mc = bundle["center_model_config"].get(
+            c, {"start_month": 1, "start_year": 2026,
+                "horizon": config.HORIZON_MONTHS})
         center_periods[c] = pnl.month_range(
             "%04d-%02d" % (mc["start_year"], mc["start_month"]),
             mc["horizon"])
@@ -319,18 +454,19 @@ def build_model() -> Optional[Model]:
     periods = sorted(union)
 
     real = _real_apartado(df, opening, last_actual)
-    proj = _proj_apartado(assumptions, opening, center_periods, last_actual)
+    proj = _proj_apartado(assumptions, opening, center_periods,
+                          last_actual, bundle=bundle)
     long_df = pd.concat([x for x in (real, proj) if not x.empty],
                         ignore_index=True) if (not real.empty
                                                or not proj.empty) \
         else pd.DataFrame(columns=_APCOLS)
 
-    key = store.get_meta("proration_key", config.PRORATION_KEY)
+    key = bundle["meta"].get("proration_key", config.PRORATION_KEY)
     weights = projections.weights_from_assumptions(assumptions)
     long_df = _hq_proration(long_df, opening, weights, key)
 
     # --- Cash flow (derivado de la P&L) ---
-    learned = store.get_meta("learned_tax", {}) or {}
+    learned = bundle["meta"].get("learned_tax", {}) or {}
     cf_long = cashflow.build_cf_long(long_df, df, last_actual,
                                      learned_tax=learned)
 
