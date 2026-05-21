@@ -116,7 +116,18 @@ def _require_login():
 
 _require_login()
 
-store.init_db()
+
+# init_db hace ~14 consultas a Supabase (CREATE TABLE IF NOT EXISTS,
+# ALTER, SELECT COUNT, semillas). Si se ejecuta en cada rerun, añade
+# ~400-700 ms por interacción. Lo aislamos en cache_resource para que
+# corra UNA SOLA VEZ por proceso de Streamlit Cloud.
+@st.cache_resource
+def _init_once():
+    store.init_db()
+    return True
+
+
+_init_once()
 
 
 # --- Cache del modelo (rapido en cloud) -----------------------------------
@@ -1119,10 +1130,11 @@ def _tabla_de_mando(code, sel_label):
                        sum(1 for p in pers["rows"]
                            if float(p.get("bruto", 0) or 0) > 0)))
         with cB:
-            if st.button("📝 Editar", key="edit_btn_%s" % code,
-                         use_container_width=True, type="primary"):
-                st.session_state[edit_key] = True
-                st.rerun()
+            def _open_editor(k=edit_key):
+                st.session_state[k] = True
+            st.button("📝 Editar", key="edit_btn_%s" % code,
+                      use_container_width=True, type="primary",
+                      on_click=_open_editor)
         st.caption("Pulsa **Editar** para modificar el modelo. "
                    "Cambiar de pestaña es rápido en modo vista.")
         return
@@ -1133,10 +1145,11 @@ def _tabla_de_mando(code, sel_label):
         st.markdown("##### ⚙ Configuración del modelo · **%s**"
                     % sel_label)
     with cB:
-        if st.button("✓ Listo", key="done_btn_%s" % code,
-                     use_container_width=True, type="primary"):
-            st.session_state[edit_key] = False
-            st.rerun()
+        def _close_editor(k=edit_key):
+            st.session_state[k] = False
+        st.button("✓ Listo", key="done_btn_%s" % code,
+                  use_container_width=True, type="primary",
+                  on_click=_close_editor)
     cfg = _c_center_model_config(vv, code)
     st.caption("Independiente por centro: estos cambios afectan **solo** a "
                "la P&L y el Cash flow de **%s**. Se aplican automáticamente."
