@@ -141,6 +141,13 @@ def invalidate_model():
     _build_model_cached.clear()
     _bulk_cache.clear()
     _c_load_ledger.clear()
+    for fn_name in ("_c_pnl_html", "_c_pnl_v2_html", "_c_cf_html"):
+        fn = globals().get(fn_name)
+        if fn is not None:
+            try:
+                fn.clear()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _v():
@@ -909,8 +916,9 @@ def _css_kind(k):
     return ""                                      # detail / cost
 
 
-def _render_table(tbl, per):
-    df_all = tbl.reset_index()                     # Concepto + periodos + _kind
+def _tbl_to_html(tbl, per):
+    """Genera el HTML estilizado de la tabla. Costoso (Styler.to_html)."""
+    df_all = tbl.reset_index()
     klist = list(df_all["_kind"]) if "_kind" in df_all.columns \
         else [""] * len(df_all)
     df2 = (df_all.drop(columns=["_kind"])
@@ -929,21 +937,61 @@ def _render_table(tbl, per):
         sty = sty.format(lambda _v: "",
                          subset=pd.IndexSlice[head_pos, per])
     sty = sty.hide(axis="index").set_table_attributes('class="kpl"')
-    st.markdown('<div class="kpl-wrap">%s</div>' % sty.to_html(),
+    return sty.to_html()
+
+
+def _render_table(tbl, per):
+    st.markdown('<div class="kpl-wrap">%s</div>' % _tbl_to_html(tbl, per),
                 unsafe_allow_html=True)
+
+
+# HTML cacheados: una vez generados, cambiar de K es solo lectura de RAM.
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_pnl_html(_v, target):
+    m = get_model()
+    if m is None:
+        return None
+    per = _periods_for(m, target)
+    is_rate = float(_c_meta(_v, "is_rate", config.IS_RATE_DEFAULT))
+    tbl = analytic.pivot_analytic(m.pnl_long, target, per, is_rate=is_rate)
+    return _tbl_to_html(tbl, per), m.last_actual_period
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_pnl_v2_html(_v):
+    m = get_model()
+    if m is None:
+        return None
+    per = _periods_for(m, "CONSOLIDADO")
+    is_rate = float(_c_meta(_v, "is_rate", config.IS_RATE_DEFAULT))
+    tbl = analytic.pivot_analytic_v2(m.pnl_long, per, is_rate=is_rate)
+    return _tbl_to_html(tbl, per), m.last_actual_period
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_cf_html(_v, target, saldo_inicial):
+    m = get_model()
+    if m is None:
+        return None
+    per = _periods_for(m, target)
+    is_rate = float(_c_meta(_v, "is_rate", config.IS_RATE_DEFAULT))
+    tbl = cashflow.pivot_cf(m.cf_long, target, per,
+                            saldo_inicial=saldo_inicial, is_rate=is_rate)
+    return _tbl_to_html(tbl, per)
 
 
 def _table_pnl(model, target):
     if model is None:
         st.info("Sube el libro diario con el botón **📥 Libro diario** para ver la P&L.")
         return
+    out = _c_pnl_html(_v(), target)
+    if out is None:
+        return
+    html, last_actual = out
     st.caption("Real hasta **%s**; después, proyectado según los supuestos."
-               % model.last_actual_period)
-    per = _periods_for(model, target)
-    is_rate = float(_c_meta(_v(), "is_rate", config.IS_RATE_DEFAULT))
-    tbl = analytic.pivot_analytic(model.pnl_long, target, per,
-                                  is_rate=is_rate)
-    _render_table(tbl, per)
+               % last_actual)
+    st.markdown('<div class="kpl-wrap">%s</div>' % html,
+                unsafe_allow_html=True)
 
 
 def _table_pnl_v2(model):
@@ -951,13 +999,15 @@ def _table_pnl_v2(model):
     if model is None:
         st.info("Sube el libro diario con el botón **📥 Libro diario** para ver la P&L.")
         return
+    out = _c_pnl_v2_html(_v())
+    if out is None:
+        return
+    html, last_actual = out
     st.caption("Misma estructura que la P&L, con el detalle de cada "
                "sección desglosado por centro (K1 ... K4 + HQ). "
-               "Real hasta **%s**." % model.last_actual_period)
-    per = _periods_for(model, "CONSOLIDADO")
-    is_rate = float(_c_meta(_v(), "is_rate", config.IS_RATE_DEFAULT))
-    tbl = analytic.pivot_analytic_v2(model.pnl_long, per, is_rate=is_rate)
-    _render_table(tbl, per)
+               "Real hasta **%s**." % last_actual)
+    st.markdown('<div class="kpl-wrap">%s</div>' % html,
+                unsafe_allow_html=True)
 
 
 def _saldo_inicial(target):
@@ -974,14 +1024,13 @@ def _table_cf(model, target):
         st.info("Sube el libro diario con el botón **📥 Libro diario** "
                 "para ver el cash flow.")
         return
+    html = _c_cf_html(_v(), target, _saldo_inicial(target))
+    if html is None:
+        return
     st.caption("Derivado de la P&L (caja = devengo). Inversión y "
                "financiación, de los movimientos reales del libro diario.")
-    per = _periods_for(model, target)
-    is_rate = float(_c_meta(_v(), "is_rate", config.IS_RATE_DEFAULT))
-    tbl = cashflow.pivot_cf(model.cf_long, target, per,
-                            saldo_inicial=_saldo_inicial(target),
-                            is_rate=is_rate)
-    _render_table(tbl, per)
+    st.markdown('<div class="kpl-wrap">%s</div>' % html,
+                unsafe_allow_html=True)
 
 
 def _placeholder(nombre):
