@@ -7,11 +7,13 @@ Arranca con doble clic en run.command (macOS) o run.bat (Windows).
 from __future__ import annotations
 
 import base64
+import json
 import os
 import tempfile
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import text
 
 from kratos import (analytic, assumptions_io, cashflow, config,
                     excel_export, pipeline, pnl, socios, store)
@@ -137,54 +139,171 @@ def invalidate_model():
     st.session_state["_model_version"] = (
         st.session_state.get("_model_version", 0) + 1)
     _build_model_cached.clear()
-    # Tambien limpia las consultas individuales
-    for fn in (_c_center_model_config, _c_center_params, _c_season,
-               _c_socios_plan, _c_personal, _c_gastos_plan,
-               _c_opening_months, _c_meta, _c_load_ledger):
-        try:
-            fn.clear()
-        except Exception:  # noqa: BLE001
-            pass
+    _bulk_cache.clear()
+    _c_load_ledger.clear()
 
 
 def _v():
     return st.session_state.get("_model_version", 0)
 
 
-# Wrappers cacheados de las consultas mas frecuentes para evitar
-# golpear Postgres en cada cambio de pestaña. TTL = 10 minutos;
-# invalidate_model() los limpia tras cualquier escritura.
+# Bulk cache: en una sola llamada (6 SELECT a Supabase) trae TODA la
+# configuracion de los 5 centros (center_model, socios_plan, personal_plan,
+# gastos_plan, meta, centers). Despues, cambiar de pestaña entre K's es
+# instantaneo porque todo se lee de RAM local. Se invalida tras cualquier
+# escritura via invalidate_model().
 @st.cache_data(ttl=600, show_spinner=False)
+def _bulk_cache(_v):
+    eng = store.get_engine()
+    with eng.begin() as conn:
+        cm_rows = conn.execute(text(
+            "SELECT centro, clave, valor FROM center_model")).fetchall()
+        sp_rows = conn.execute(text(
+            "SELECT centro, periodo, altas, churn, bajas "
+            "FROM socios_plan")).fetchall()
+        pp_rows = conn.execute(text(
+            "SELECT centro, rol, nombre, bruto, mes_inicio, destino, "
+            "ss_pct FROM personal_plan")).fetchall()
+        gp_rows = conn.execute(text(
+            "SELECT centro, idx, partida, importe, intervalo, apartado, "
+            "mes_inicio FROM gastos_plan ORDER BY centro, idx")).fetchall()
+        m_rows = conn.execute(text(
+            "SELECT clave, valor FROM meta")).fetchall()
+        c_rows = conn.execute(text(
+            "SELECT centro, label, apertura FROM centers")).fetchall()
+
+    cm = {}
+    for centro, clave, valor in cm_rows:
+        cm.setdefault(centro, {})[clave] = valor
+
+    sp = {}
+    for centro, per, a, c, b in sp_rows:
+        sp.setdefault(centro, {})[per] = {
+            "altas": a or 0, "churn": c or 0, "bajas": b or 0}
+
+    pp = {}
+    for centro, rol, nombre, bruto, mi, dest, ssp in pp_rows:
+        pp.setdefault(centro, {})[rol] = (rol, nombre, bruto, mi, dest, ssp)
+
+    gp = {}
+    for centro, idx, partida, imp, itv, ap, mi in gp_rows:
+        gp.setdefault(centro, []).append({
+            "partida": partida or "",
+            "importe": float(imp or 0),
+            "intervalo": int(itv or 1),
+            "apartado": ap or config.COST_APARTADOS[0],
+            "mes_inicio": int(mi or 1)})
+
+    meta = {}
+    for clave, valor in m_rows:
+        try:
+            meta[clave] = json.loads(valor)
+        except (ValueError, TypeError):
+            meta[clave] = valor
+
+    centers_df = pd.DataFrame(
+        [{"centro": c, "label": lbl, "apertura": a}
+         for c, lbl, a in c_rows])
+
+    return {
+        "center_model": cm,
+        "socios_plan": sp,
+        "personal_plan": pp,
+        "gastos_plan": gp,
+        "meta": meta,
+        "centers_df": centers_df,
+    }
+
+
 def _c_center_model_config(_v, code):
-    return store.get_center_model_config(code)
+    raw = _bulk_cache(_v)["center_model"].get(code, {})
+    d = {"start_month": 1, "start_year": 2026,
+         "horizon": config.HORIZON_MONTHS}
+    for k, val in raw.items():
+        if k in d:
+            d[k] = int(val)
+    return d
 
-@st.cache_data(ttl=600, show_spinner=False)
+
 def _c_center_params(_v, code):
-    return store.get_center_params(code)
+    raw = _bulk_cache(_v)["center_model"].get(code, {})
+    d = {"iva": 21.0, "aforo": 0.0, "ticket": 0.0}
+    d.update(raw)
+    return d
 
-@st.cache_data(ttl=600, show_spinner=False)
+
 def _c_season(_v, code):
-    return store.get_season(code)
+    raw = _bulk_cache(_v)["center_model"].get(code, {})
+    s = [100.0] * 12
+    for k, val in raw.items():
+        if isinstance(k, str) and k.startswith("season_"):
+            try:
+                i = int(k.split("_")[1])
+                if 1 <= i <= 12:
+                    s[i - 1] = float(val)
+            except (ValueError, IndexError):
+                pass
+    return s
 
-@st.cache_data(ttl=600, show_spinner=False)
+
 def _c_socios_plan(_v, code):
-    return store.get_socios_plan(code)
+    return dict(_bulk_cache(_v)["socios_plan"].get(code, {}))
 
-@st.cache_data(ttl=600, show_spinner=False)
+
 def _c_personal(_v, code):
-    return store.get_personal(code)
+    saved = _bulk_cache(_v)["personal_plan"].get(code, {})
+    out = []
+    for rol in config.PERSONAL_ROLES:
+        r = saved.get(rol)
+        dest = (r[4] if r and len(r) > 4 and r[4] else None)
+        if not dest:
+            dest = ("Sueldos Directos" if str(rol).startswith("Entrenador")
+                    else "Sueldos Indirectos")
+        ssp = (r[5] if r and len(r) > 5 and r[5] is not None else None)
+        out.append({
+            "rol": rol,
+            "nombre": (r[1] if r and r[1] is not None else "") or "",
+            "bruto": float(r[2]) if r and r[2] is not None else 0.0,
+            "mes_inicio": int(r[3]) if r and r[3] is not None else 1,
+            "destino": dest,
+            "ss_pct": float(ssp) if ssp is not None
+            else float(config.SS_PCT_DEFAULT)})
+    return {"rows": out}
 
-@st.cache_data(ttl=600, show_spinner=False)
+
+_GASTOS_SEED_LOCAL = [
+    ("Compras mercaderías", "Aprovisionamientos", 1, 1),
+    ("Arrendamiento local", "Otros gastos de explotacion", 1, 1),
+    ("Limpieza", "Otros gastos de explotacion", 1, 1),
+    ("Suministros", "Otros gastos de explotacion", 1, 1),
+    ("Servicios profesionales", "Otros gastos de explotacion", 1, 1),
+    ("Intereses préstamo", "Gastos financieros", 1, 1),
+]
+
+
 def _c_gastos_plan(_v, code):
-    return store.get_gastos_plan(code)
+    bulk = _bulk_cache(_v)
+    rows = bulk["gastos_plan"].get(code)
+    if rows:
+        return list(rows)
+    if bulk["meta"].get("gastos_init_%s" % code):
+        return []
+    return [{"partida": p, "importe": 0.0, "intervalo": itv,
+             "apartado": ap, "mes_inicio": mi}
+            for p, ap, itv, mi in _GASTOS_SEED_LOCAL]
 
-@st.cache_data(ttl=600, show_spinner=False)
+
 def _c_opening_months(_v):
-    return store.opening_months()
+    df = _bulk_cache(_v)["centers_df"]
+    if df.empty:
+        return {}
+    return dict(zip(df["centro"], df["apertura"]))
 
-@st.cache_data(ttl=600, show_spinner=False)
+
 def _c_meta(_v, clave, default=None):
-    return store.get_meta(clave, default)
+    val = _bulk_cache(_v)["meta"].get(clave)
+    return val if val is not None else default
+
 
 @st.cache_data(ttl=600, show_spinner=False)
 def _c_load_ledger(_v):
