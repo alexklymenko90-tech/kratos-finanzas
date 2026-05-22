@@ -66,26 +66,41 @@ def _dialect() -> str:
 
 def _upsert(conn, table: str, columns: List[str],
             pk_columns: List[str], rows: List[dict]) -> None:
-    """UPSERT compatible con SQLite y Postgres."""
+    """UPSERT BATCHED en UNA SOLA query (no executemany).
+
+    Antes hacia N round-trips porque psycopg2.executemany hace una
+    consulta por fila. Ahora construimos una sola SQL con multiples
+    VALUES (...), (...). Compatible con SQLite y Postgres."""
     if not rows:
         return
     cols_sql = ", ".join(columns)
-    placeholders = ", ".join(":" + c for c in columns)
+    # Placeholders por fila: (:col_0_0, :col_1_0, ...), (:col_0_1, ...)
+    value_groups = []
+    params = {}
+    for i, row in enumerate(rows):
+        ph = []
+        for c in columns:
+            key = "%s_%d" % (c, i)
+            ph.append(":" + key)
+            params[key] = row.get(c)
+        value_groups.append("(" + ", ".join(ph) + ")")
+    values_sql = ", ".join(value_groups)
+
     d = _dialect()
     if d == "sqlite":
-        sql = "INSERT OR REPLACE INTO %s (%s) VALUES (%s)" % (
-            table, cols_sql, placeholders)
+        sql = "INSERT OR REPLACE INTO %s (%s) VALUES %s" % (
+            table, cols_sql, values_sql)
     elif d == "postgresql":
         update_cols = [c for c in columns if c not in pk_columns]
         update_set = ", ".join("%s = EXCLUDED.%s" % (c, c)
                                for c in update_cols)
         pk_sql = ", ".join(pk_columns)
-        sql = ("INSERT INTO %s (%s) VALUES (%s) "
+        sql = ("INSERT INTO %s (%s) VALUES %s "
                "ON CONFLICT (%s) DO UPDATE SET %s" % (
-                   table, cols_sql, placeholders, pk_sql, update_set))
+                   table, cols_sql, values_sql, pk_sql, update_set))
     else:
         raise RuntimeError("Dialecto no soportado: %s" % d)
-    conn.execute(text(sql), rows)
+    conn.execute(text(sql), params)
 
 
 # Compatibilidad: algunas partes de la app antigua llamaban a get_conn().
