@@ -7,6 +7,8 @@ Arranca con doble clic en run.command (macOS) o run.bat (Windows).
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import tempfile
@@ -46,10 +48,39 @@ def _login_logo_b64():
         return ""
 
 
+def _auth_secret() -> str:
+    """Clave secreta para firmar tokens de sesion. Si no esta en secrets,
+    usa un fallback estable para dev (no romper si falta)."""
+    try:
+        s = st.secrets.get("auth_secret")
+        if s:
+            return str(s)
+    except Exception:  # noqa: BLE001
+        pass
+    return "kratos-default-change-in-secrets-toml"
+
+
+def _make_token(user: str) -> str:
+    return hmac.new(_auth_secret().encode(),
+                    user.encode(), hashlib.sha256).hexdigest()
+
+
 def _require_login():
     users = _get_users()
     if not users:
         return                                # modo desarrollo (sin login)
+
+    # Restaurar sesion desde query params si el usuario refresca el
+    # navegador. El token es un HMAC del usuario con la clave secreta,
+    # asi que nadie puede forjarlo.
+    if not st.session_state.get("auth_user"):
+        q = st.query_params
+        qu = q.get("u")
+        qt = q.get("t")
+        if (qu and qt and qu in users
+                and hmac.compare_digest(_make_token(qu), str(qt))):
+            st.session_state["auth_user"] = qu
+
     if st.session_state.get("auth_user"):
         return                                # ya autenticado
 
@@ -108,6 +139,9 @@ def _require_login():
     if ok:
         if u in users and str(users[u]) == p:
             st.session_state["auth_user"] = u
+            # Token firmado en URL -> al refrescar, se mantiene la sesion
+            st.query_params["u"] = u
+            st.query_params["t"] = _make_token(u)
             st.rerun()
         else:
             st.error("Usuario o contraseña incorrectos.")
