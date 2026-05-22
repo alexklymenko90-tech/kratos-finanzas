@@ -18,7 +18,7 @@ import streamlit as st
 from sqlalchemy import text
 
 from kratos import (analytic, assumptions_io, cashflow, config,
-                    excel_export, pipeline, pnl, socios, store)
+                    excel_export, pipeline, pnl, scenario, socios, store)
 
 # Color de marca Kratos (tomado de kratoscalisthenics.com)
 BRAND_RED = "#E30613"
@@ -506,6 +506,47 @@ def dlg_export():
                            mime="application/vnd.openxmlformats-officedocument."
                                 "spreadsheetml.sheet",
                            use_container_width=True)
+
+    st.divider()
+    st.markdown("##### 🎯 Escenarios (JSON) — Tabla de mando")
+    st.caption("Exporta toda la configuración de **Tabla de mando** "
+               "(modelo, socios, personal, gastos) en un único archivo "
+               ".json. Cada socio puede bajárselo, jugar con su propio "
+               "escenario y compartir el suyo. La P&L y el Cash flow se "
+               "recalculan automáticamente al importar — el libro diario "
+               "real no se toca.")
+
+    se1, se2 = st.columns(2)
+    with se1:
+        try:
+            sc_bytes = scenario.export_scenario()
+            st.download_button(
+                "⬇ Descargar escenario actual",
+                data=sc_bytes, file_name=scenario.suggest_filename(),
+                mime="application/json", use_container_width=True,
+                key="dl_scenario")
+        except Exception as e:  # noqa: BLE001
+            st.error("No se pudo exportar el escenario: %s" % e)
+    with se2:
+        up_sc = st.file_uploader("Importar escenario (.json)",
+                                 type=["json"], key="exp_up_sc")
+        if up_sc is not None and st.button(
+                "Aplicar escenario", use_container_width=True,
+                key="apply_sc", type="primary"):
+            try:
+                summary = scenario.import_scenario(up_sc.getvalue())
+            except Exception as e:  # noqa: BLE001
+                st.error("No se pudo importar: %s" % e)
+            else:
+                invalidate_model()
+                st.success(
+                    "✓ Escenario aplicado · %d centros · %d gastos · "
+                    "%d personal · %d socios · %d aperturas"
+                    % (summary["centros"], summary["gastos"],
+                       summary["personal"], summary["socios"],
+                       summary["aperturas"]))
+                st.button("Cerrar", on_click=st.rerun,
+                          key="close_sc")
 
 
 @st.dialog("Ajustes")
