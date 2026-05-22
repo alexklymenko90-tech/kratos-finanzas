@@ -513,8 +513,12 @@ def dlg_export():
                "(modelo, socios, personal, gastos) en un único archivo "
                ".json. Cada socio puede bajárselo, jugar con su propio "
                "escenario y compartir el suyo. La P&L y el Cash flow se "
-               "recalculan automáticamente al importar — el libro diario "
-               "real no se toca.")
+               "recalculan automáticamente al importar.")
+    st.caption("ℹ️ **Importante**: el escenario solo afecta a los "
+               "**meses futuros** (a partir del último mes con datos "
+               "reales en el libro diario). Los meses ya cerrados con "
+               "lo real de Holded nunca se pisan, sea lo que sea lo "
+               "que digas aquí o en la Tabla de mando.")
 
     se1, se2 = st.columns(2)
     with se1:
@@ -1195,8 +1199,9 @@ def _tabla_de_mando(code, sel_label):
     with cH:
         st.markdown("##### ⚙ Configuración del modelo · **%s**" % sel_label)
         st.caption("Edita los campos que quieras y pulsa **💾 Guardar** "
-                   "arriba a la derecha. Los cambios no se aplican a la "
-                   "P&L / Cash flow hasta que guardes.")
+                   "arriba a la derecha. Los cambios solo afectan a los "
+                   "**meses futuros**: lo que ya esté cerrado con datos "
+                   "reales del libro diario nunca se pisa.")
     with cBtn:
         save_clicked = st.button(
             "💾 Guardar cambios", key="save_tdm_%s" % code,
