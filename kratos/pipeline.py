@@ -425,8 +425,11 @@ def _preload_bundle(engine):
     }
 
 
-def build_model() -> Optional[Model]:
-    df = store.load_ledger()
+def build_model(ledger_df=None) -> Optional[Model]:
+    """`ledger_df` permite pasar el ledger ya cargado (cacheado por la
+    app) para no re-hacer la query de ~3.500 filas a Supabase en cada
+    edicion de Tabla de mando (~1.1s ahorrados)."""
+    df = ledger_df if ledger_df is not None else store.load_ledger()
     if df is None:
         return None
     engine = store.get_engine()

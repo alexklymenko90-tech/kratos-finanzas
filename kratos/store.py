@@ -48,12 +48,15 @@ def _database_url() -> str:
 def get_engine() -> Engine:
     global _engine_cache
     if _engine_cache is None:
-        # pool_pre_ping=False evita un ping antes de cada query (ahorra
-        # 30-50 ms por consulta). En su lugar reciclamos conexiones
-        # cada 10 min para que no caduquen.
+        # pool_pre_ping=False evita un ping antes de cada query.
+        # pool_size + max_overflow grande para que las escrituras en
+        # paralelo (boton Guardar) no se serialicen por falta de
+        # conexiones.
         _engine_cache = create_engine(_database_url(), future=True,
                                       pool_pre_ping=False,
-                                      pool_recycle=600)
+                                      pool_recycle=600,
+                                      pool_size=10,
+                                      max_overflow=20)
         if _engine_cache.dialect.name == "sqlite":
             with _engine_cache.begin() as conn:
                 conn.exec_driver_sql("PRAGMA journal_mode=WAL")

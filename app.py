@@ -165,27 +165,36 @@ _init_once()
 
 
 # --- Cache del modelo (rapido en cloud) -----------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_ledger(_lv: int):
+    """Cache separado del libro diario (transferir ~3500 filas tarda ~1s).
+    Solo se invalida cuando sube un nuevo libro diario, NO en cada
+    edicion de Tabla de mando."""
+    return store.load_ledger()
+
+
 @st.cache_data(ttl=600, show_spinner=False)
-def _build_model_cached(_version: int):
-    """Construye el modelo (lectura completa de BBDD + calculos). El
-    parametro `_version` se usa para invalidar la cache; cuando algo
-    cambia (carga libro, edicion de Tabla de mando, mapeo, etc.) se
-    incrementa el contador en session_state y la cache se invalida."""
-    return pipeline.build_model()
+def _build_model_cached(_version: int, _lv: int):
+    """Construye el modelo (lectura BBDD + calculos). `_version` cambia
+    en cada edicion (invalida proyecciones); `_lv` solo cambia al subir
+    nuevo libro diario (mantiene el ledger en cache entre ediciones)."""
+    df = _cached_ledger(_lv)
+    return pipeline.build_model(ledger_df=df)
 
 
 def get_model():
     v = st.session_state.get("_model_version", 0)
-    return _build_model_cached(v)
+    lv = st.session_state.get("_ledger_version", 0)
+    return _build_model_cached(v, lv)
 
 
 def invalidate_model():
-    """Llamar tras cualquier escritura que afecte la P&L/Cash flow."""
+    """Llamar tras editar Tabla de mando, mapeo, etc. (NO afecta al
+    libro diario, que se mantiene en cache para acelerar el rebuild)."""
     st.session_state["_model_version"] = (
         st.session_state.get("_model_version", 0) + 1)
     _build_model_cached.clear()
     _bulk_cache.clear()
-    _c_load_ledger.clear()
     for fn_name in ("_c_pnl_html", "_c_pnl_v2_html", "_c_cf_html"):
         fn = globals().get(fn_name)
         if fn is not None:
@@ -193,6 +202,15 @@ def invalidate_model():
                 fn.clear()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def invalidate_ledger():
+    """Llamar tras subir un nuevo libro diario. Invalida TODO."""
+    st.session_state["_ledger_version"] = (
+        st.session_state.get("_ledger_version", 0) + 1)
+    _cached_ledger.clear()
+    _c_load_ledger.clear()
+    invalidate_model()
 
 
 def _v():
@@ -423,11 +441,11 @@ DISABLED = {"K5", "K6"}
 SUBTABS = {
     "CONSOLIDADO": ["PyL", "PyL v2 · por centro", "Cashflow", "Resumen"],
     "DASHBOARD": [],
-    "HQ": ["Tabla de mando", "PyL"],
-    "K1": ["Tabla de mando", "PyL", "Cashflow"],
-    "K2": ["Tabla de mando", "PyL", "Cashflow"],
-    "K3": ["Tabla de mando", "PyL", "Cashflow"],
-    "K4": ["Tabla de mando", "PyL", "Cashflow"],
+    "HQ": ["PyL", "Tabla de mando"],
+    "K1": ["PyL", "Cashflow", "Tabla de mando"],
+    "K2": ["PyL", "Cashflow", "Tabla de mando"],
+    "K3": ["PyL", "Cashflow", "Tabla de mando"],
+    "K4": ["PyL", "Cashflow", "Tabla de mando"],
 }
 
 
@@ -611,7 +629,7 @@ def dlg_carga():
         except Exception as e:  # noqa: BLE001
             st.error("No se pudo procesar el archivo: %s" % e)
         else:
-            invalidate_model()
+            invalidate_ledger()
             st.success(
                 "Carga procesada · %s asientos · %s → %s · cobertura %.1f%%"
                 % ("{:,}".format(s.n_rows), s.date_min, s.date_max,
@@ -736,7 +754,7 @@ def dlg_diagnostico():
         d = _classify.apply_overrides(d, store.load_overrides())
         d = _plm.apply_mapping(d, store.load_mapping())
         store.save_ledger(d)
-        invalidate_model()
+        invalidate_ledger()
         st.success("Reclasificado. Cierra el diálogo y abre de nuevo "
                    "para ver los cambios.")
         st.rerun()
@@ -1477,24 +1495,39 @@ def _tabla_de_mando(code, sel_label):
 
     # --- GUARDAR TODO al pulsar el botón ---
     if save_clicked:
+        from concurrent.futures import ThreadPoolExecutor
         with st.spinner("Guardando cambios…"):
-            store.set_center_model_config(code, int(sm), int(sy), int(hz))
-            params = {"saldo_inicial": float(sld_val or 0)}
+            params = {"start_month": int(sm), "start_year": int(sy),
+                      "horizon": int(hz),
+                      "saldo_inicial": float(sld_val or 0)}
             if iva is not None:
                 params["iva"] = float(iva)
             if aforo is not None:
                 params["aforo"] = float(aforo)
             if ticket is not None:
                 params["ticket"] = float(ticket)
-            store.set_center_params(code, params)
             if code in config.CENTERS:
-                store.set_season(
-                    code, [st.session_state["seas_%d_%s" % (i, code)]
-                           for i in range(1, 13)])
-                store.set_socios_plan(code, newplan)
-            store.set_personal(code, new_pers)
-            store.set_gastos_plan(code, all_g)
+                for i in range(1, 13):
+                    params["season_%d" % i] = float(
+                        st.session_state["seas_%d_%s" % (i, code)])
+
+            tasks = [
+                ("center_params", lambda: store.set_center_params(
+                    code, params)),
+                ("personal", lambda: store.set_personal(code, new_pers)),
+                ("gastos", lambda: store.set_gastos_plan(code, all_g)),
+            ]
+            if code in config.CENTERS:
+                tasks.append(("socios", lambda: store.set_socios_plan(
+                    code, newplan)))
+
+            with ThreadPoolExecutor(max_workers=len(tasks)) as ex:
+                futs = {ex.submit(fn): name for name, fn in tasks}
+                for f in futs:
+                    f.result()      # propaga errores si los hay
             invalidate_model()
+            # Redirigir a la P&L tras guardar
+            st.session_state["sub_%s" % code] = "PyL"
         st.success("✓ Cambios guardados.")
         st.rerun()
 
