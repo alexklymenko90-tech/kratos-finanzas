@@ -1199,7 +1199,6 @@ def _tabla_de_mando(code, sel_label):
         if _norm(newplan) != _norm(plan):
             store.set_socios_plan(code, newplan)
             invalidate_model()
-            st.rerun()
 
         # Tabla calculada con colores de marca Kratos (solo lectura,
         # sin repetir Altas/Churn: esas son las entradas de arriba)
@@ -1318,7 +1317,6 @@ def _tabla_de_mando(code, sel_label):
         if _norm_p(new_pers) != _norm_p(pers["rows"]):
             store.set_personal(code, new_pers)
             invalidate_model()
-            st.rerun()
 
     with col_tot:
         st.markdown("**Totales** (no editables):")
@@ -1455,14 +1453,13 @@ def _tabla_de_mando(code, sel_label):
         invalidate_model()
 
 
-# Pre-calentar caché de todos los centros + consolidado en una sola
-# pasada por sesión. Cuesta ~5-10s la primera vez, pero a partir de ahí
-# CUALQUIER cambio entre K's (o a Consolidado/HQ) es instantáneo porque
-# todo el HTML de P&L y Cash flow esta en RAM.
-if (not st.session_state.get("_warmed_v") or
-        st.session_state.get("_warmed_v") != _v()):
+# Pre-calentar caché de todos los centros + consolidado SOLO la primera
+# vez de la sesión (no se re-ejecuta aunque alguna escritura invalide
+# el modelo). Las invalidaciones limpian _build_model_cached y los HTML
+# cacheados; la siguiente lectura los recalcula on-demand (no necesita
+# warm-up para todos).
+if not st.session_state.get("_warmed_once"):
     with st.spinner("⚡ Preparando todos los centros (solo la primera vez)…"):
-        # Forzar build_model (cacheado)
         _m_w = get_model()
         if _m_w is not None:
             for _t in (config.ALL_CENTERS + ["CONSOLIDADO"]):
@@ -1478,7 +1475,7 @@ if (not st.session_state.get("_warmed_v") or
                 _c_pnl_v2_html(_v())
             except Exception:  # noqa: BLE001
                 pass
-    st.session_state["_warmed_v"] = _v()
+    st.session_state["_warmed_once"] = True
 
 
 if code in DISABLED:
