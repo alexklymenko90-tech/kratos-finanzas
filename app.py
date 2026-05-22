@@ -1131,23 +1131,28 @@ def _cb_saldo(code):
 def _tabla_de_mando(code, sel_label):
     vv = _v()
     cfg = _c_center_model_config(vv, code)
-    st.markdown("##### ⚙ Configuración del modelo · **%s**" % sel_label)
-    st.caption("Independiente por centro: estos cambios afectan **solo** a "
-               "la P&L y el Cash flow de **%s**. Se aplican automáticamente."
-               % sel_label)
+    # Cabecera + boton GUARDAR
+    cH, cBtn = st.columns([5, 1.4])
+    with cH:
+        st.markdown("##### ⚙ Configuración del modelo · **%s**" % sel_label)
+        st.caption("Edita los campos que quieras y pulsa **💾 Guardar** "
+                   "arriba a la derecha. Los cambios no se aplican a la "
+                   "P&L / Cash flow hasta que guardes.")
+    with cBtn:
+        save_clicked = st.button(
+            "💾 Guardar cambios", key="save_tdm_%s" % code,
+            use_container_width=True, type="primary")
+
     c1, c2, c3, c4 = st.columns([1.2, 1, 1.3, 1.6])
     sm = c1.selectbox("Mes de inicio", list(range(1, 13)),
                       index=cfg["start_month"] - 1, key="cfg_sm_%s" % code,
-                      on_change=_cb_model_cfg, args=(code,),
                       format_func=lambda i: "%s (mes %d)" % (MESES[i - 1], i))
     years = list(range(2026, 2031))
     sy = c2.selectbox("Año de inicio", years, key="cfg_sy_%s" % code,
-                      on_change=_cb_model_cfg, args=(code,),
                       index=years.index(cfg["start_year"])
                       if cfg["start_year"] in years else 0)
     hors = [12, 24, 36, 48, 60]
     hz = c3.selectbox("Meses de proyección", hors, key="cfg_hz_%s" % code,
-                      on_change=_cb_model_cfg, args=(code,),
                       index=hors.index(cfg["horizon"])
                       if cfg["horizon"] in hors else 2,
                       format_func=lambda h: "%d meses" % h)
@@ -1155,11 +1160,13 @@ def _tabla_de_mando(code, sel_label):
     c4.markdown("**Período:** %s" % _periodo_label(sm, sy, hz))
 
     sld = float(_c_center_params(vv, code).get("saldo_inicial", 0) or 0)
-    st.number_input(
+    sld_val = st.number_input(
         "Saldo de caja inicial (€) — punto de partida del saldo acumulado",
         value=sld, step=100.0, format="%.0f",
-        key="sld_%s" % code, on_change=_cb_saldo, args=(code,))
+        key="sld_%s" % code)
 
+    iva = aforo = ticket = None
+    newplan = {}
     if code in config.CENTERS:
         st.divider()
         st.markdown("##### 📈 Ingresos — modelo de socios")
@@ -1168,16 +1175,13 @@ def _tabla_de_mando(code, sel_label):
         iva = e1.number_input("IVA servicios fitness (%)", min_value=0.0,
                               max_value=100.0, step=1.0,
                               value=float(p.get("iva", 21.0)),
-                              key="soc_iva_%s" % code,
-                              on_change=_cb_socios, args=(code,))
+                              key="soc_iva_%s" % code)
         aforo = e2.number_input("Aforo máximo (nº socios)", min_value=0,
                                 step=1, value=int(p.get("aforo", 0)),
-                                key="soc_afo_%s" % code,
-                                on_change=_cb_socios, args=(code,))
+                                key="soc_afo_%s" % code)
         ticket = e3.number_input("Ticket medio (€/mes)", min_value=0.0,
                                  step=1.0, value=float(p.get("ticket", 0.0)),
-                                 key="soc_tkt_%s" % code,
-                                 on_change=_cb_socios, args=(code,))
+                                 key="soc_tkt_%s" % code)
         st.caption("El ingreso de cuotas se calcula con el modelo de abajo "
                    "(socios × ticket × estacionalidad). Se vuelca solo en "
                    "la P&L (meses futuros, desde la apertura).")
@@ -1192,8 +1196,8 @@ def _tabla_de_mando(code, sel_label):
         for i in range(12):
             scols[i].number_input(
                 MESES[i], min_value=0.0, step=5.0,
-                value=float(season[i]), key="seas_%d_%s" % (i + 1, code),
-                on_change=_cb_season, args=(code,))
+                value=float(season[i]),
+                key="seas_%d_%s" % (i + 1, code))
 
         # --- Socios, altas y churn (mini-tabla entrada + tabla color)--
         st.markdown("##### 👥 Socios, altas y churn — mes a mes")
@@ -1230,9 +1234,7 @@ def _tabla_de_mando(code, sel_label):
             if (a or 0) or (ch or 0):
                 newplan[per] = {"altas": float(a or 0),
                                 "churn": float(ch or 0)}
-        if _norm(newplan) != _norm(plan):
-            store.set_socios_plan(code, newplan)
-            invalidate_model()
+        # (Guardado se hace al pulsar el botón, no aquí.)
 
         # Tabla calculada con colores de marca Kratos (solo lectura,
         # sin repetir Altas/Churn: esas son las entradas de arriba)
@@ -1348,9 +1350,7 @@ def _tabla_de_mando(code, sel_label):
                  int(r["mes_inicio"]))
                 for r in rows)
 
-        if _norm_p(new_pers) != _norm_p(pers["rows"]):
-            store.set_personal(code, new_pers)
-            invalidate_model()
+        # (Guardado se hace al pulsar el botón, no aquí.)
 
     with col_tot:
         st.markdown("**Totales** (no editables):")
@@ -1475,16 +1475,28 @@ def _tabla_de_mando(code, sel_label):
                 "intervalo": config.FREQ_MONTHS.get(freq, 1),
                 "apartado": sec_key, "mes_inicio": mi})
 
-    def _norm_g(rows):
-        return tuple(
-            (r.get("partida", ""), round(float(r.get("importe", 0) or 0), 2),
-             int(r.get("intervalo", 1) or 1),
-             r.get("apartado", ""),
-             int(r.get("mes_inicio", 1) or 1))
-            for r in rows)
-    if _norm_g(all_g) != _norm_g(gplan):
-        store.set_gastos_plan(code, all_g)
-        invalidate_model()
+    # --- GUARDAR TODO al pulsar el botón ---
+    if save_clicked:
+        with st.spinner("Guardando cambios…"):
+            store.set_center_model_config(code, int(sm), int(sy), int(hz))
+            params = {"saldo_inicial": float(sld_val or 0)}
+            if iva is not None:
+                params["iva"] = float(iva)
+            if aforo is not None:
+                params["aforo"] = float(aforo)
+            if ticket is not None:
+                params["ticket"] = float(ticket)
+            store.set_center_params(code, params)
+            if code in config.CENTERS:
+                store.set_season(
+                    code, [st.session_state["seas_%d_%s" % (i, code)]
+                           for i in range(1, 13)])
+                store.set_socios_plan(code, newplan)
+            store.set_personal(code, new_pers)
+            store.set_gastos_plan(code, all_g)
+            invalidate_model()
+        st.success("✓ Cambios guardados.")
+        st.rerun()
 
 
 # Pre-calentar caché de todos los centros + consolidado SOLO la primera
