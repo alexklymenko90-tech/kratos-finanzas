@@ -614,6 +614,17 @@ def dlg_export():
 
 @st.dialog("Ajustes")
 def dlg_settings():
+    st.markdown("##### 🔄 Refrescar datos")
+    st.caption("Vacía la caché y reconstruye P&L y Cash flow desde la "
+               "base de datos actual. Úsalo si algo se ve desactualizado "
+               "(p. ej. tras cambios hechos por otra persona).")
+    if st.button("🔄 Refrescar datos ahora", use_container_width=True):
+        invalidate_ledger()
+        st.success("Caché vaciada. Cierra este diálogo para ver los "
+                   "datos actualizados.")
+        st.button("Cerrar", on_click=st.rerun, key="close_refresh")
+    st.divider()
+
     st.markdown("##### Mes de apertura por centro")
     cdf = store.get_centers()
     ed = st.data_editor(cdf, use_container_width=True, key="c_ed",
