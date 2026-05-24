@@ -256,15 +256,18 @@ def _proj_apartado(assumptions, opening, center_periods, last_actual,
                          "apartado": config.VENTAS, "partida": "Cuotas",
                          "valor": round(val, 2)})
 
-        # Personal: TODO el personal -> "Gastos de Personal"
+        # Personal: el salario bruto de cada persona va a la partida
+        # "Sueldos y salarios" (concepto de la cuenta contable 640), igual
+        # que lo real del libro diario. La Seguridad Social a cargo de la
+        # empresa va a "Seguridad Social" (cuenta 642). El desglose por
+        # persona se ve en la Tabla de mando, no en la P&L. _agg suma
+        # todas las personas en la misma partida/mes.
+        apdo = "Gastos de Personal"
         for person in pers["rows"]:
             b = float(person["bruto"] or 0)
             if b <= 0:
                 continue
             ss = float(person.get("ss_pct", 0) or 0) / 100.0
-            apdo = "Gastos de Personal"
-            etiqueta = (str(person.get("nombre") or "").strip()
-                        or str(person["rol"]))
             mi = int(person["mes_inicio"] or 1)
             anchor = next((i for i, p in enumerate(win)
                            if int(p[5:7]) == mi), 0)
@@ -272,9 +275,9 @@ def _proj_apartado(assumptions, opening, center_periods, last_actual,
                 if p <= last_actual or p < ap_open:
                     continue
                 rows.append({"centro": c, "periodo": p, "apartado": apdo,
-                             "partida": etiqueta, "valor": -abs(b)})
+                             "partida": "Sueldos y salarios",
+                             "valor": -abs(b)})
                 if ss:
-                    # SS agregada (no por empleado): una sola linea total
                     rows.append({"centro": c, "periodo": p,
                                  "apartado": apdo,
                                  "partida": "Seguridad Social",
