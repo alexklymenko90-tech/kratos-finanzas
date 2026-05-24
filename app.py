@@ -553,15 +553,17 @@ def dlg_export():
                           key="close_sc")
 
     st.divider()
-    st.markdown("##### 📊 P&L (JSON) — cifras directas por partida/mes")
+    st.markdown("##### 📊 P&L (Excel) — cifras directas por partida/mes")
     n_ov = store.count_pnl_overrides()
-    st.caption("Descarga la P&L tal cual la ves (todos los meses, por "
-               "centro/partida). El cliente edita los **meses futuros** "
-               "en su herramienta y reimporta: esas cifras **mandan sobre "
-               "el modelo** de Tabla de mando para esos meses. Lo real "
-               "del libro diario nunca se pisa.")
+    st.caption("Descarga la P&L en **Excel** (una hoja por centro, "
+               "todos los meses). Los meses **reales** salen sombreados "
+               "en amarillo (no editar); los **futuros** en blanco. El "
+               "cliente edita los futuros en Excel y reimporta: esas "
+               "cifras **mandan sobre el modelo** de Tabla de mando. Lo "
+               "real del libro diario nunca se pisa.")
     if n_ov:
-        st.info("Hay **%d overrides** de P&L activos ahora mismo." % n_ov)
+        st.info("Hay **%d cifras de P&L importadas** activas ahora mismo "
+                "(mandan sobre el modelo en esos meses)." % n_ov)
 
     pl1, pl2 = st.columns(2)
     with pl1:
@@ -569,26 +571,26 @@ def dlg_export():
             st.caption("Sube el libro diario para exportar la P&L.")
         else:
             try:
-                pnl_bytes = scenario.export_pnl(m)
+                pnl_bytes = scenario.export_pnl_xlsx(m)
                 st.download_button(
-                    "⬇ Descargar P&L (para editar fuera)",
+                    "⬇ Descargar P&L en Excel",
                     data=pnl_bytes,
-                    file_name=scenario.suggest_pnl_filename(),
-                    mime="application/json", use_container_width=True,
-                    key="dl_pnl")
+                    file_name=scenario.suggest_pnl_xlsx_filename(),
+                    mime="application/vnd.openxmlformats-officedocument."
+                         "spreadsheetml.sheet",
+                    use_container_width=True, key="dl_pnl")
             except Exception as e:  # noqa: BLE001
                 st.error("No se pudo exportar la P&L: %s" % e)
     with pl2:
-        up_pnl = st.file_uploader("Importar P&L editada (.json)",
-                                  type=["json"], key="exp_up_pnl")
+        up_pnl = st.file_uploader("Importar P&L editada (.xlsx)",
+                                  type=["xlsx"], key="exp_up_pnl")
         if up_pnl is not None and st.button(
                 "Aplicar cifras de P&L", use_container_width=True,
                 key="apply_pnl", type="primary"):
             la = m.last_actual_period if m is not None else \
                 store.get_meta("last_actual_period")
             try:
-                summary = scenario.import_pnl_overrides(
-                    up_pnl.getvalue(), la)
+                summary = scenario.import_pnl_xlsx(up_pnl.getvalue(), la)
             except Exception as e:  # noqa: BLE001
                 st.error("No se pudo importar: %s" % e)
             else:
@@ -1003,7 +1005,7 @@ def dlg_diagnostico():
 
 
 # --- Cabecera: titulo + acciones ------------------------------------------
-htitle, hsp, b0, b3, b1, b2 = st.columns([4.6, 1.5, 1.5, 1.4, 1.2, 1.2])
+htitle, hsp, b0, b3, b1, b2 = st.columns([3.4, 1.0, 1.5, 1.4, 1.9, 1.0])
 _auth_user = st.session_state.get("auth_user")
 if _auth_user:
     htitle.markdown(
@@ -1028,9 +1030,9 @@ if b3.button("🔍 Diagnóstico", use_container_width=True,
              help="Comprobaciones sobre el libro diario que afectan "
                   "al cuadre con P&L y Cash flow"):
     dlg_diagnostico()
-if b1.button("📤 Exportar", use_container_width=True,
-             help="Plantilla de supuestos para el cliente + Excel "
-                  "de resultados (P&L y Cash flow)"):
+if b1.button("📤 Exportar / Importar", use_container_width=True,
+             help="Exportar e importar: plantilla de supuestos, "
+                  "escenarios (JSON), P&L (Excel) y Excel de resultados"):
     dlg_export()
 if b2.button("⚙ Ajustes", use_container_width=True,
              help="Aperturas de centros, mapeo de cuentas, tasa de IS, "

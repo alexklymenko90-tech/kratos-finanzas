@@ -307,3 +307,157 @@ def import_pnl_overrides(data: bytes, last_actual: str) -> dict:
 def suggest_pnl_filename() -> str:
     ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M")
     return "Kratos_PL_%s.json" % ts
+
+
+# --- P&L en EXCEL (lo que el cliente edita en Excel) ----------------------
+_APARTADO_ORDER = [
+    "Ingresos",
+    "Aprovisionamientos",
+    "Gastos de Personal",
+    "Otros gastos de explotacion",
+    "Gastos de estructura HQ",
+    "Amortizaciones",
+    "Gastos financieros",
+]
+
+
+def _apartado_rank(ap: str) -> int:
+    try:
+        return _APARTADO_ORDER.index(ap)
+    except ValueError:
+        return len(_APARTADO_ORDER)
+
+
+def export_pnl_xlsx(model) -> bytes:
+    """P&L en Excel: una hoja por centro, filas = (apartado, partida),
+    columnas = meses. Los meses REALES (<= last_actual) van sombreados en
+    amarillo (no editar); los futuros en blanco (editables). Al reimportar
+    solo se aplican los meses futuros."""
+    import xlsxwriter
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    f_title = wb.add_format({"bold": True, "font_size": 13})
+    f_note = wb.add_format({"italic": True, "font_color": "#555555",
+                            "text_wrap": True})
+    f_hdr = wb.add_format({"bold": True, "bg_color": "#1F4E78",
+                           "font_color": "white", "border": 1,
+                           "align": "center"})
+    f_key = wb.add_format({"border": 1, "bg_color": "#EEEEEE"})
+    f_lbl = wb.add_format({"border": 1})
+    f_real = wb.add_format({"border": 1, "bg_color": "#FFF2CC",
+                            "num_format": "#,##0"})       # real - no editar
+    f_fut = wb.add_format({"border": 1, "num_format": "#,##0"})   # editable
+
+    df = model.pnl_long
+    last_actual = model.last_actual_period or ""
+
+    for centro in config.ALL_CENTERS:
+        ws = wb.add_worksheet(centro)
+        ws.set_column(0, 0, 22)
+        ws.set_column(1, 1, 30)
+        ws.write(0, 1, "P&L — %s" %
+                 config.CENTER_LABELS.get(centro, centro), f_title)
+        ws.write(1, 1,
+                 "Celdas AMARILLAS = meses reales del libro diario "
+                 "(no editar, se ignoran al reimportar). Celdas BLANCAS "
+                 "= meses futuros: edítalos y reimporta. Gastos en "
+                 "negativo, ingresos en positivo. No cambies las columnas "
+                 "A (apartado) ni B (partida).", f_note)
+        ws.set_row(1, 44)
+
+        periods = model.center_periods.get(centro, model.periods)
+        ws.set_column(2, 2 + len(periods), 11)
+
+        r = 3
+        ws.write(r, 0, "apartado", f_hdr)
+        ws.write(r, 1, "partida", f_hdr)
+        for j, p in enumerate(periods):
+            ws.write(r, 2 + j, p, f_hdr)
+        ws.freeze_panes(r + 1, 2)
+        r += 1
+
+        sub = df[df["centro"] == centro] if df is not None else None
+        if sub is None or sub.empty:
+            continue
+        # valores por (apartado, partida, periodo)
+        vmap = {}
+        for ap, part, per, val in zip(sub["apartado"], sub["partida"],
+                                      sub["periodo"], sub["valor"]):
+            vmap[(ap, part, per)] = float(val)
+        combos = sorted(
+            {(ap, part) for ap, part in zip(sub["apartado"],
+                                            sub["partida"])},
+            key=lambda x: (_apartado_rank(x[0]), x[1]))
+        for ap, part in combos:
+            ws.write(r, 0, ap, f_key)
+            ws.write(r, 1, part, f_lbl)
+            for j, p in enumerate(periods):
+                v = vmap.get((ap, part, p), 0.0)
+                fmt = f_real if p <= last_actual else f_fut
+                ws.write_number(r, 2 + j, round(v, 2), fmt)
+            r += 1
+
+    wb.close()
+    buf.seek(0)
+    return buf.read()
+
+
+def import_pnl_xlsx(data: bytes, last_actual: str) -> dict:
+    """Lee el Excel de P&L (formato export_pnl_xlsx, editado) y guarda los
+    valores de los meses FUTUROS como overrides."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    last_actual = last_actual or ""
+    rows = []
+    for centro in config.ALL_CENTERS:
+        if centro not in wb.sheetnames:
+            continue
+        ws = wb[centro]
+        # Fila de cabecera: la que tiene 'apartado' en col A
+        header_row = None
+        for ridx in range(1, min(ws.max_row, 12) + 1):
+            if str(ws.cell(ridx, 1).value or "").strip().lower() == \
+                    "apartado":
+                header_row = ridx
+                break
+        if header_row is None:
+            continue
+        # Mapear columnas de mes (desde col 3)
+        periods = {}
+        c = 3
+        while True:
+            val = ws.cell(header_row, c).value
+            if val is None or str(val).strip() == "":
+                break
+            periods[c] = str(val).strip()
+            c += 1
+        # Filas de datos
+        for ridx in range(header_row + 1, ws.max_row + 1):
+            ap = ws.cell(ridx, 1).value
+            part = ws.cell(ridx, 2).value
+            if not ap or not part:
+                continue
+            for col, per in periods.items():
+                if per <= last_actual:
+                    continue
+                cell = ws.cell(ridx, col).value
+                if cell is None or cell == "":
+                    continue
+                try:
+                    valor = float(cell)
+                except (TypeError, ValueError):
+                    continue
+                rows.append({
+                    "centro": centro, "periodo": per,
+                    "apartado": str(ap).strip(),
+                    "partida": str(part).strip(), "valor": valor})
+
+    store.set_pnl_overrides(rows, replace=True)
+    centros = sorted({r["centro"] for r in rows})
+    return {"overrides": len(rows), "centros": len(centros),
+            "centros_list": centros}
+
+
+def suggest_pnl_xlsx_filename() -> str:
+    ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M")
+    return "Kratos_PL_%s.xlsx" % ts
