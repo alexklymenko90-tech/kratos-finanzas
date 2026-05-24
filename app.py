@@ -450,145 +450,49 @@ SUBTABS = {
 
 
 # --- Dialogos de accion (botones de la cabecera) --------------------------
-@st.dialog("Exportar / Importar")
+@st.dialog("Exportar / Importar P&L")
 def dlg_export():
-    opening = store.opening_months()
-    existing = store.load_assumptions()
-    # ventana = union de todos los centros (para que el cliente pueda
-    # rellenar cualquiera)
-    allp = set()
-    for c in config.ALL_CENTERS:
-        mc = store.get_center_model_config(c)
-        allp.update(pnl.month_range(
-            "%04d-%02d" % (mc["start_year"], mc["start_month"]),
-            mc["horizon"]))
-    allp = sorted(allp) or [config.DEFAULT_START_MONTH]
-    a, b = allp[0], allp[-1]
-    span = (int(b[:4]) - int(a[:4])) * 12 + (int(b[5:7]) - int(a[5:7])) + 1
-
-    st.markdown("##### Plantilla de supuestos (proyección del cliente)")
-    tpl = assumptions_io.export_template(
-        opening, start_month=a, horizon=span,
-        last_actual_period=store.get_meta("last_actual_period"),
-        existing=existing if not existing.empty else None)
-    st.download_button("⬇ Descargar plantilla (para enviar al cliente)",
-                       data=tpl, file_name="Kratos_supuestos.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument."
-                            "spreadsheetml.sheet", use_container_width=True)
-    upa = st.file_uploader("Subir plantilla rellenada por el cliente",
-                           type=["xlsx"], key="exp_up_a")
-    if upa is not None and st.button("Importar supuestos",
-                                     use_container_width=True):
-        try:
-            adf = assumptions_io.import_template(upa.getvalue())
-        except Exception as e:  # noqa: BLE001
-            st.error("No se pudo leer: %s" % e)
-        else:
-            if adf.empty:
-                st.warning("La plantilla no tenía valores.")
-            else:
-                store.save_assumptions(adf)
-                invalidate_model()
-                st.success("Importados %d valores en %d centros."
-                           % (len(adf), adf["centro"].nunique()))
-                st.button("Cerrar", on_click=st.rerun)
-
-    st.divider()
-    st.markdown("##### Excel de resultados (P&L + Cash flow)")
     m = get_model()
-    if m is None:
-        st.info("Sube el libro diario (pestaña **Libro diario**) para "
-                "poder exportar resultados.")
-    else:
-        st.download_button("⬇ Descargar resultados",
-                           data=excel_export.build_workbook(m),
-                           file_name="Kratos_PL_CashFlow.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument."
-                                "spreadsheetml.sheet",
-                           use_container_width=True)
+    st.markdown("##### 📊 P&L en Excel — exportar e importar")
+    st.caption("Descarga la P&L de cada centro (K1–K4 + HQ) en **Excel**: "
+               "una hoja por centro, todos los meses. Los meses **reales** "
+               "salen en amarillo (no editar); los **futuros** en blanco. "
+               "El cliente edita los futuros en Excel y reimporta — esas "
+               "cifras **mandan sobre el modelo** de Tabla de mando, solo "
+               "en meses futuros. El **Cash flow y el Consolidado se "
+               "recalculan automáticamente**; no hace falta exportarlos "
+               "ni importarlos.")
 
-    st.divider()
-    st.markdown("##### 🎯 Escenarios (JSON) — Tabla de mando")
-    st.caption("Exporta toda la configuración de **Tabla de mando** "
-               "(modelo, socios, personal, gastos) en un único archivo "
-               ".json. Cada socio puede bajárselo, jugar con su propio "
-               "escenario y compartir el suyo. La P&L y el Cash flow se "
-               "recalculan automáticamente al importar.")
-    st.caption("ℹ️ **Importante**: el escenario solo afecta a los "
-               "**meses futuros** (a partir del último mes con datos "
-               "reales en el libro diario). Los meses ya cerrados con "
-               "lo real de Holded nunca se pisan, sea lo que sea lo "
-               "que digas aquí o en la Tabla de mando.")
-
-    se1, se2 = st.columns(2)
-    with se1:
-        try:
-            sc_bytes = scenario.export_scenario()
-            st.download_button(
-                "⬇ Descargar escenario actual",
-                data=sc_bytes, file_name=scenario.suggest_filename(),
-                mime="application/json", use_container_width=True,
-                key="dl_scenario")
-        except Exception as e:  # noqa: BLE001
-            st.error("No se pudo exportar el escenario: %s" % e)
-    with se2:
-        up_sc = st.file_uploader("Importar escenario (.json)",
-                                 type=["json"], key="exp_up_sc")
-        if up_sc is not None and st.button(
-                "Aplicar escenario", use_container_width=True,
-                key="apply_sc", type="primary"):
-            try:
-                summary = scenario.import_scenario(up_sc.getvalue())
-            except Exception as e:  # noqa: BLE001
-                st.error("No se pudo importar: %s" % e)
-            else:
-                invalidate_model()
-                st.success(
-                    "✓ Escenario aplicado · %d centros · %d gastos · "
-                    "%d personal · %d socios · %d aperturas"
-                    % (summary["centros"], summary["gastos"],
-                       summary["personal"], summary["socios"],
-                       summary["aperturas"]))
-                st.button("Cerrar", on_click=st.rerun,
-                          key="close_sc")
-
-    st.divider()
-    st.markdown("##### 📊 P&L (Excel) — cifras directas por partida/mes")
     n_ov = store.count_pnl_overrides()
-    st.caption("Descarga la P&L en **Excel** (una hoja por centro, "
-               "todos los meses). Los meses **reales** salen sombreados "
-               "en amarillo (no editar); los **futuros** en blanco. El "
-               "cliente edita los futuros en Excel y reimporta: esas "
-               "cifras **mandan sobre el modelo** de Tabla de mando. Lo "
-               "real del libro diario nunca se pisa.")
     if n_ov:
         st.info("Hay **%d cifras de P&L importadas** activas ahora mismo "
                 "(mandan sobre el modelo en esos meses)." % n_ov)
 
+    if m is None:
+        st.warning("Sube el libro diario (botón **📥 Libro diario**) para "
+                   "poder exportar la P&L.")
+        return
+
     pl1, pl2 = st.columns(2)
     with pl1:
-        if m is None:
-            st.caption("Sube el libro diario para exportar la P&L.")
-        else:
-            try:
-                pnl_bytes = scenario.export_pnl_xlsx(m)
-                st.download_button(
-                    "⬇ Descargar P&L en Excel",
-                    data=pnl_bytes,
-                    file_name=scenario.suggest_pnl_xlsx_filename(),
-                    mime="application/vnd.openxmlformats-officedocument."
-                         "spreadsheetml.sheet",
-                    use_container_width=True, key="dl_pnl")
-            except Exception as e:  # noqa: BLE001
-                st.error("No se pudo exportar la P&L: %s" % e)
+        try:
+            pnl_bytes = scenario.export_pnl_xlsx(m)
+            st.download_button(
+                "⬇ Descargar P&L en Excel",
+                data=pnl_bytes,
+                file_name=scenario.suggest_pnl_xlsx_filename(),
+                mime="application/vnd.openxmlformats-officedocument."
+                     "spreadsheetml.sheet",
+                use_container_width=True, key="dl_pnl")
+        except Exception as e:  # noqa: BLE001
+            st.error("No se pudo exportar la P&L: %s" % e)
     with pl2:
         up_pnl = st.file_uploader("Importar P&L editada (.xlsx)",
                                   type=["xlsx"], key="exp_up_pnl")
         if up_pnl is not None and st.button(
                 "Aplicar cifras de P&L", use_container_width=True,
                 key="apply_pnl", type="primary"):
-            la = m.last_actual_period if m is not None else \
-                store.get_meta("last_actual_period")
+            la = m.last_actual_period
             try:
                 summary = scenario.import_pnl_xlsx(up_pnl.getvalue(), la)
             except Exception as e:  # noqa: BLE001
@@ -597,17 +501,18 @@ def dlg_export():
                 invalidate_model()
                 st.success(
                     "✓ %d cifras aplicadas en %d centros (solo meses "
-                    "futuros)." % (summary["overrides"],
-                                   summary["centros"]))
+                    "futuros). Cash flow y Consolidado actualizados."
+                    % (summary["overrides"], summary["centros"]))
                 st.button("Cerrar", on_click=st.rerun, key="close_pnl")
 
     if n_ov:
-        if st.button("🗑 Quitar todos los overrides de P&L "
-                     "(volver al modelo)", use_container_width=True,
-                     key="clear_pnl_ov"):
+        st.divider()
+        if st.button("🗑 Quitar todas las cifras importadas "
+                     "(volver al modelo de Tabla de mando)",
+                     use_container_width=True, key="clear_pnl_ov"):
             store.clear_pnl_overrides()
             invalidate_model()
-            st.success("Overrides eliminados. La P&L vuelve a calcularse "
+            st.success("Cifras eliminadas. La P&L vuelve a calcularse "
                        "100%% desde la Tabla de mando.")
             st.button("Cerrar", on_click=st.rerun, key="close_clear_ov")
 
@@ -1016,7 +921,7 @@ def dlg_diagnostico():
 
 
 # --- Cabecera: titulo + acciones ------------------------------------------
-htitle, hsp, b0, b3, b1, b2 = st.columns([3.4, 1.0, 1.5, 1.4, 1.9, 1.0])
+htitle, hsp, b0, b3, b1, b2 = st.columns([4.2, 1.6, 1.5, 1.4, 1.2, 1.0])
 _auth_user = st.session_state.get("auth_user")
 if _auth_user:
     htitle.markdown(
@@ -1041,9 +946,10 @@ if b3.button("🔍 Diagnóstico", use_container_width=True,
              help="Comprobaciones sobre el libro diario que afectan "
                   "al cuadre con P&L y Cash flow"):
     dlg_diagnostico()
-if b1.button("📤 Exportar / Importar", use_container_width=True,
-             help="Exportar e importar: plantilla de supuestos, "
-                  "escenarios (JSON), P&L (Excel) y Excel de resultados"):
+if b1.button("📤 P&L Excel", use_container_width=True,
+             help="Exportar/importar la P&L en Excel. El cliente edita "
+                  "los meses futuros y reimporta; cashflow y consolidado "
+                  "se recalculan solos."):
     dlg_export()
 if b2.button("⚙ Ajustes", use_container_width=True,
              help="Aperturas de centros, mapeo de cuentas, tasa de IS, "
