@@ -921,7 +921,7 @@ def dlg_diagnostico():
 
 
 # --- Cabecera: titulo + acciones ------------------------------------------
-htitle, hsp, b0, b3, b1, b2 = st.columns([4.2, 1.6, 1.5, 1.4, 1.2, 1.0])
+htitle, hsp, b0, b3, b1, b2 = st.columns([3.0, 0.6, 1.5, 1.4, 2.2, 1.0])
 _auth_user = st.session_state.get("auth_user")
 if _auth_user:
     htitle.markdown(
@@ -946,7 +946,7 @@ if b3.button("🔍 Diagnóstico", use_container_width=True,
              help="Comprobaciones sobre el libro diario que afectan "
                   "al cuadre con P&L y Cash flow"):
     dlg_diagnostico()
-if b1.button("📤 P&L Excel", use_container_width=True,
+if b1.button("📤 Exportar / Importar P&L", use_container_width=True,
              help="Exportar/importar la P&L en Excel. El cliente edita "
                   "los meses futuros y reimporta; cashflow y consolidado "
                   "se recalculan solos."):
