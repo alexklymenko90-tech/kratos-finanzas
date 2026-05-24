@@ -153,6 +153,11 @@ def init_db() -> None:
         """CREATE TABLE IF NOT EXISTS meta (
             clave TEXT PRIMARY KEY, valor TEXT
         )""",
+        """CREATE TABLE IF NOT EXISTS pnl_overrides (
+            centro TEXT, periodo TEXT, apartado TEXT, partida TEXT,
+            valor REAL,
+            PRIMARY KEY (centro, periodo, apartado, partida)
+        )""",
     ]
     with engine.begin() as conn:
         for stmt in ddl:
@@ -413,6 +418,56 @@ def set_socios_plan(centro: str, plan: dict) -> None:
                   "churn": float(v.get("churn", 0) or 0),
                   "bajas": float(v.get("bajas", 0) or 0)}
                  for p, v in plan.items()])
+
+
+# --- Overrides de P&L (cifras importadas directas por partida/mes) --------
+def get_pnl_overrides() -> list:
+    """[{centro, periodo, apartado, partida, valor}, ...]"""
+    try:
+        with get_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT centro, periodo, apartado, partida, valor "
+                "FROM pnl_overrides")).fetchall()
+    except SQLAlchemyError:
+        return []
+    return [{"centro": c, "periodo": p, "apartado": ap,
+             "partida": part, "valor": float(v or 0)}
+            for c, p, ap, part, v in rows]
+
+
+def set_pnl_overrides(rows: list, replace: bool = True) -> None:
+    """Guarda overrides. Si replace=True borra los previos antes."""
+    with get_engine().begin() as conn:
+        if replace:
+            conn.execute(text("DELETE FROM pnl_overrides"))
+        if rows:
+            _upsert(conn, "pnl_overrides",
+                    ["centro", "periodo", "apartado", "partida", "valor"],
+                    ["centro", "periodo", "apartado", "partida"],
+                    [{"centro": str(r["centro"]),
+                      "periodo": str(r["periodo"]),
+                      "apartado": str(r["apartado"]),
+                      "partida": str(r["partida"]),
+                      "valor": float(r.get("valor", 0) or 0)}
+                     for r in rows])
+
+
+def clear_pnl_overrides(centro: str = None) -> None:
+    with get_engine().begin() as conn:
+        if centro:
+            conn.execute(text("DELETE FROM pnl_overrides WHERE centro=:c"),
+                         {"c": centro})
+        else:
+            conn.execute(text("DELETE FROM pnl_overrides"))
+
+
+def count_pnl_overrides() -> int:
+    try:
+        with get_engine().begin() as conn:
+            return int(conn.execute(text(
+                "SELECT COUNT(*) FROM pnl_overrides")).scalar() or 0)
+    except SQLAlchemyError:
+        return 0
 
 
 # --- Tabla maestra de Gastos (lista libre con Apartado PL) ----------------

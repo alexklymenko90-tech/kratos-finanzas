@@ -552,6 +552,63 @@ def dlg_export():
                 st.button("Cerrar", on_click=st.rerun,
                           key="close_sc")
 
+    st.divider()
+    st.markdown("##### 📊 P&L (JSON) — cifras directas por partida/mes")
+    n_ov = store.count_pnl_overrides()
+    st.caption("Descarga la P&L tal cual la ves (todos los meses, por "
+               "centro/partida). El cliente edita los **meses futuros** "
+               "en su herramienta y reimporta: esas cifras **mandan sobre "
+               "el modelo** de Tabla de mando para esos meses. Lo real "
+               "del libro diario nunca se pisa.")
+    if n_ov:
+        st.info("Hay **%d overrides** de P&L activos ahora mismo." % n_ov)
+
+    pl1, pl2 = st.columns(2)
+    with pl1:
+        if m is None:
+            st.caption("Sube el libro diario para exportar la P&L.")
+        else:
+            try:
+                pnl_bytes = scenario.export_pnl(m)
+                st.download_button(
+                    "⬇ Descargar P&L (para editar fuera)",
+                    data=pnl_bytes,
+                    file_name=scenario.suggest_pnl_filename(),
+                    mime="application/json", use_container_width=True,
+                    key="dl_pnl")
+            except Exception as e:  # noqa: BLE001
+                st.error("No se pudo exportar la P&L: %s" % e)
+    with pl2:
+        up_pnl = st.file_uploader("Importar P&L editada (.json)",
+                                  type=["json"], key="exp_up_pnl")
+        if up_pnl is not None and st.button(
+                "Aplicar cifras de P&L", use_container_width=True,
+                key="apply_pnl", type="primary"):
+            la = m.last_actual_period if m is not None else \
+                store.get_meta("last_actual_period")
+            try:
+                summary = scenario.import_pnl_overrides(
+                    up_pnl.getvalue(), la)
+            except Exception as e:  # noqa: BLE001
+                st.error("No se pudo importar: %s" % e)
+            else:
+                invalidate_model()
+                st.success(
+                    "✓ %d cifras aplicadas en %d centros (solo meses "
+                    "futuros)." % (summary["overrides"],
+                                   summary["centros"]))
+                st.button("Cerrar", on_click=st.rerun, key="close_pnl")
+
+    if n_ov:
+        if st.button("🗑 Quitar todos los overrides de P&L "
+                     "(volver al modelo)", use_container_width=True,
+                     key="clear_pnl_ov"):
+            store.clear_pnl_overrides()
+            invalidate_model()
+            st.success("Overrides eliminados. La P&L vuelve a calcularse "
+                       "100%% desde la Tabla de mando.")
+            st.button("Cerrar", on_click=st.rerun, key="close_clear_ov")
+
 
 @st.dialog("Ajustes")
 def dlg_settings():

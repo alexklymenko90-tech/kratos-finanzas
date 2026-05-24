@@ -224,3 +224,86 @@ def import_scenario(data: bytes) -> dict:
 def suggest_filename() -> str:
     ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M")
     return "Kratos_escenario_%s.json" % ts
+
+
+# --- P&L: exportar la P&L vista + importar overrides directos -------------
+PNL_SCHEMA = 1
+
+
+def export_pnl(model) -> bytes:
+    """Exporta la P&L (todos los meses, por centro/apartado/partida) en
+    JSON. El cliente edita los meses futuros y reimporta como overrides.
+    `model` = pipeline.Model ya construido."""
+    out: Dict[str, Any] = {
+        "_schema": PNL_SCHEMA,
+        "_type": "pnl",
+        "_exported_at": _dt.datetime.utcnow().isoformat() + "Z",
+        "last_actual_period": model.last_actual_period,
+        "nota": ("Edita SOLO los meses posteriores a last_actual_period. "
+                 "Los meses <= last_actual son reales del libro diario y "
+                 "se ignoran al reimportar. Los importes de gasto van en "
+                 "negativo, los ingresos en positivo."),
+        "centros": {},
+    }
+    df = model.pnl_long
+    if df is None or df.empty:
+        return json.dumps(out, indent=2, ensure_ascii=False).encode("utf-8")
+
+    for centro in config.ALL_CENTERS:
+        sub = df[df["centro"] == centro]
+        if sub.empty:
+            continue
+        lineas = []
+        grp = sub.groupby(["apartado", "partida"])
+        for (apartado, partida), g in grp:
+            valores = {p: round(float(v), 2)
+                       for p, v in zip(g["periodo"], g["valor"])}
+            lineas.append({
+                "apartado": apartado, "partida": partida,
+                "valores": valores})
+        out["centros"][centro] = {
+            "label": config.CENTER_LABELS.get(centro, centro),
+            "lineas": lineas,
+        }
+    return json.dumps(out, indent=2, ensure_ascii=False).encode("utf-8")
+
+
+def import_pnl_overrides(data: bytes, last_actual: str) -> dict:
+    """Lee un JSON de P&L (formato export_pnl, editado) y guarda los
+    valores de los meses FUTUROS como overrides. Devuelve resumen."""
+    try:
+        doc = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ValueError("JSON invalido: %s" % e)
+    if not isinstance(doc, dict) or doc.get("_type") != "pnl":
+        raise ValueError("El JSON no es una P&L exportada desde la app "
+                         "(falta _type='pnl').")
+    if doc.get("_schema") != PNL_SCHEMA:
+        raise ValueError("Version de esquema incompatible. Re-exporta la "
+                         "P&L desde la version actual de la app.")
+
+    rows = []
+    last_actual = last_actual or ""
+    for centro, cdata in (doc.get("centros") or {}).items():
+        if centro not in config.ALL_CENTERS:
+            continue
+        for ln in cdata.get("lineas", []):
+            apartado = str(ln.get("apartado", ""))
+            partida = str(ln.get("partida", ""))
+            for periodo, valor in (ln.get("valores") or {}).items():
+                if str(periodo) <= last_actual:
+                    continue          # nunca pisa lo real
+                rows.append({
+                    "centro": centro, "periodo": str(periodo),
+                    "apartado": apartado, "partida": partida,
+                    "valor": float(valor or 0)})
+
+    store.set_pnl_overrides(rows, replace=True)
+    centros = sorted({r["centro"] for r in rows})
+    return {"overrides": len(rows), "centros": len(centros),
+            "centros_list": centros}
+
+
+def suggest_pnl_filename() -> str:
+    ts = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M")
+    return "Kratos_PL_%s.json" % ts

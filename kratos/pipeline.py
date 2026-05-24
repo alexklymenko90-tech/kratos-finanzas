@@ -139,6 +139,36 @@ def effective_tax(partida: str, learned: dict = None) -> dict:
 _APCOLS = ["centro", "periodo", "apartado", "partida", "valor", "origen"]
 
 
+def _apply_pnl_overrides(long_df, overrides, last_actual):
+    """Reemplaza las filas proyectadas por los overrides importados, solo
+    para meses futuros (periodo > last_actual). El override manda sobre
+    el modelo de Tabla de mando."""
+    if not overrides:
+        return long_df
+    fut = [o for o in overrides
+           if str(o.get("periodo", "")) > (last_actual or "")]
+    if not fut:
+        return long_df
+    keys = {(o["centro"], o["periodo"], o["apartado"], o["partida"])
+            for o in fut}
+    if long_df is not None and not long_df.empty:
+        mask = [
+            (c, p, ap, part) in keys
+            for c, p, ap, part in zip(
+                long_df["centro"], long_df["periodo"],
+                long_df["apartado"], long_df["partida"])]
+        long_df = long_df[[not m for m in mask]]
+    new_rows = [{"centro": o["centro"], "periodo": o["periodo"],
+                 "apartado": o["apartado"], "partida": o["partida"],
+                 "valor": float(o.get("valor", 0) or 0),
+                 "origen": "override"}
+                for o in fut]
+    extra = pd.DataFrame(new_rows, columns=_APCOLS)
+    if long_df is None or long_df.empty:
+        return extra
+    return pd.concat([long_df, extra], ignore_index=True)
+
+
 def _agg(rows):
     if not rows:
         return pd.DataFrame(columns=_APCOLS)
@@ -463,6 +493,11 @@ def build_model(ledger_df=None) -> Optional[Model]:
                         ignore_index=True) if (not real.empty
                                                or not proj.empty) \
         else pd.DataFrame(columns=_APCOLS)
+
+    # Overrides de P&L importados: mandan sobre el modelo, solo en meses
+    # futuros (periodo > last_actual). Nunca pisan lo real.
+    overrides = store.get_pnl_overrides()
+    long_df = _apply_pnl_overrides(long_df, overrides, last_actual)
 
     key = bundle["meta"].get("proration_key", config.PRORATION_KEY)
     weights = projections.weights_from_assumptions(assumptions)
