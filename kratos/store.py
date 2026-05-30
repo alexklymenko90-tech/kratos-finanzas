@@ -176,6 +176,29 @@ def init_db() -> None:
         except SQLAlchemyError:
             pass
 
+    # Activar Row-Level Security en todas las tablas (Postgres/Supabase).
+    # Sin RLS, la API REST publica de Supabase deja a cualquiera con la
+    # URL del proyecto leer/editar los datos. Con RLS activo y sin
+    # politicas, todos los roles ('anon', 'authenticated') quedan
+    # bloqueados; la app sigue funcionando porque se conecta como
+    # 'postgres' (superuser) que se salta RLS por diseño.
+    # En SQLite es no-op (el ALTER falla y lo ignoramos).
+    if _dialect() == "postgresql":
+        ALL_TABLES = ["pl_mapping", "center_overrides", "assumptions",
+                      "centers", "center_model", "socios_plan",
+                      "personal_plan", "gastos_plan", "meta",
+                      "pnl_overrides", "ledger_normalized"]
+        for t in ALL_TABLES:
+            for stmt in (
+                f'ALTER TABLE "{t}" ENABLE ROW LEVEL SECURITY',
+                f'ALTER TABLE "{t}" FORCE ROW LEVEL SECURITY',
+            ):
+                try:
+                    with engine.begin() as conn:
+                        conn.execute(text(stmt))
+                except SQLAlchemyError:
+                    pass
+
     # Semillas (solo si vacias)
     with engine.begin() as conn:
         n = conn.execute(text("SELECT COUNT(*) FROM pl_mapping")).scalar()
