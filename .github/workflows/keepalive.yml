@@ -1,0 +1,25 @@
+name: Supabase Keepalive
+
+# Hace un SELECT 1 contra Supabase cada 3 dias para que el proyecto
+# (plan Free) no se auto-pause por inactividad. No modifica ningun dato.
+
+on:
+  schedule:
+    - cron: '0 12 */3 * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ping Supabase (SELECT 1)
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "Falta el secret DATABASE_URL en el repo."
+            exit 1
+          fi
+          psql "$DATABASE_URL" -tA -c "SELECT now() AS ping_time, 'keepalive' AS source;"
+          echo "Ping OK"
