@@ -232,8 +232,22 @@ def save_ledger(df: pd.DataFrame) -> None:
         if c not in out.columns:
             out[c] = None
     out = out[_LEDGER_COLS]
-    out.to_sql("ledger_normalized", get_engine(),
+    engine = get_engine()
+    out.to_sql("ledger_normalized", engine,
                if_exists="replace", index=False)
+    # pandas.to_sql(if_exists="replace") hace DROP+CREATE, y la tabla
+    # renace sin RLS. Reactivamos RLS aqui para no depender de que
+    # init_db() vuelva a correr (esta cacheado por sesion).
+    if _dialect() == "postgresql":
+        for stmt in (
+            'ALTER TABLE "ledger_normalized" ENABLE ROW LEVEL SECURITY',
+            'ALTER TABLE "ledger_normalized" FORCE ROW LEVEL SECURITY',
+        ):
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(stmt))
+            except SQLAlchemyError:
+                pass
 
 
 def load_ledger() -> Optional[pd.DataFrame]:
